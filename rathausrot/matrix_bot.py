@@ -1,0 +1,168 @@
+import asyncio
+import logging
+import threading
+import time
+from typing import List, Optional
+
+from rathausrot.utils import strip_html
+
+logger = logging.getLogger(__name__)
+
+
+class MatrixBot:
+    def __init__(self, config: dict):
+        self.config = config
+        matrix_cfg = config.get("matrix", {})
+        self.homeserver = matrix_cfg.get("homeserver", "")
+        self.username = matrix_cfg.get("username", "")
+        self.access_token = matrix_cfg.get("access_token", "")
+        self.room_id = matrix_cfg.get("room_id", "")
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            import nio
+            self._client = nio.AsyncClient(self.homeserver, self.username)
+            self._client.access_token = self.access_token
+            self._client.user_id = self.username
+        return self._client
+
+    @staticmethod
+    def login_with_password(homeserver: str, username: str, password: str) -> str:
+        import nio
+
+        async def _login():
+            client = nio.AsyncClient(homeserver, username)
+            resp = await client.login(password)
+            await client.close()
+            if isinstance(resp, nio.LoginResponse):
+                return resp.access_token
+            raise RuntimeError(f"Login failed: {resp}")
+
+        return asyncio.run(_login())
+
+    def send_message(self, html_content: str) -> None:
+        plain = strip_html(html_content)
+
+        async def _send():
+            import nio
+            client = self._get_client()
+            content = {
+                "msgtype": "m.text",
+                "body": plain,
+                "format": "org.matrix.custom.html",
+                "formatted_body": html_content,
+            }
+            resp = await client.room_send(
+                room_id=self.room_id,
+                message_type="m.room.message",
+                content=content,
+            )
+            if isinstance(resp, nio.RoomSendError):
+                logger.error("Failed to send message: %s", resp)
+            else:
+                logger.info("Message sent to %s", self.room_id)
+
+        asyncio.run(_send())
+
+    def send_chunks(self, chunks: List[str]) -> None:
+        for i, chunk in enumerate(chunks):
+            logger.info("Sending chunk %d/%d", i + 1, len(chunks))
+            self.send_message(chunk)
+            if i < len(chunks) - 1:
+                time.sleep(1)
+
+    def send_startup_message(self) -> None:
+        self.send_message(
+            "<p><strong>🔴 RathausRot ist aktiv</strong></p>"
+            "<p>Der Bot wurde gestartet und überwacht das Ratsinfo-System.</p>"
+            "<p>Tippe <code>!hilfe</code> für verfügbare Befehle.</p>"
+        )
+
+    def close(self) -> None:
+        if self._client is not None:
+            async def _close():
+                await self._client.close()
+            try:
+                asyncio.run(_close())
+            except Exception as exc:
+                logger.warning("Error closing Matrix client: %s", exc)
+            self._client = None
+
+    def run_sync(self, coro):
+        return asyncio.run(coro)
+
+    # ------------------------------------------------------------------ #
+    # Command listener – runs in a dedicated daemon thread
+    # ------------------------------------------------------------------ #
+
+    async def _listen_loop(self, command_handler) -> None:
+        """Persistent async sync loop that dispatches incoming chat commands."""
+        import nio
+
+        # Use a dedicated client so the listener doesn't interfere with
+        # fire-and-forget send_message() calls elsewhere.
+        client = nio.AsyncClient(self.homeserver, self.username)
+        client.access_token = self.access_token
+        client.user_id = self.username
+
+        async def _on_message(room, event):
+            if not isinstance(event, nio.RoomMessageText):
+                return
+            if room.room_id != self.room_id:
+                return
+            response_html = command_handler.handle(event.sender, event.body)
+            if response_html is None:
+                return
+            plain = strip_html(response_html)
+            send_resp = await client.room_send(
+                room_id=self.room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "body": plain,
+                    "format": "org.matrix.custom.html",
+                    "formatted_body": response_html,
+                },
+            )
+            if isinstance(send_resp, nio.RoomSendError):
+                logger.error("Failed to send command response: %s", send_resp)
+
+        client.add_event_callback(_on_message, nio.RoomMessageText)
+
+        try:
+            # Initial sync to get the current `since` token so we do NOT
+            # replay messages that arrived before the bot started.
+            logger.info("Command listener: performing initial sync...")
+            init_resp = await client.sync(timeout=0, full_state=True)
+            since = getattr(init_resp, "next_batch", None)
+            logger.info("Command listener ready – listening for commands")
+            await client.sync_forever(timeout=30000, since=since, full_state=False)
+        except asyncio.CancelledError:
+            logger.info("Command listener cancelled")
+        except Exception as exc:
+            logger.error("Command listener error: %s", exc, exc_info=True)
+        finally:
+            await client.close()
+
+    def start_command_listener(self, command_handler) -> threading.Thread:
+        """Start the Matrix sync/command listener in a daemon background thread.
+
+        The thread runs its own asyncio event loop so it doesn't interfere with
+        the synchronous scheduler loop in the main thread.
+        """
+
+        def _run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._listen_loop(command_handler))
+            except Exception as exc:
+                logger.error("Command listener thread crashed: %s", exc)
+            finally:
+                loop.close()
+
+        thread = threading.Thread(target=_run, daemon=True, name="matrix-listener")
+        thread.start()
+        logger.info("Command listener thread started")
+        return thread

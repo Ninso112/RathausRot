@@ -1,0 +1,86 @@
+import logging
+from typing import List, Optional, Tuple
+
+from rathausrot.utils import chunk_html, strip_html
+from rathausrot.scraper import CouncilItem
+from rathausrot.llm_client import LLMResult
+
+logger = logging.getLogger(__name__)
+
+VERDICT_EMOJI = {
+    "Zustimmung": "✅",
+    "Ablehnung": "❌",
+    "Enthaltung": "🤔",
+}
+
+STAR_RATINGS = {
+    1: "★☆☆☆☆",
+    2: "★★☆☆☆",
+    3: "★★★☆☆",
+    4: "★★★★☆",
+    5: "★★★★★",
+}
+
+DISCLAIMER = (
+    "<em>Hinweis: Diese Einschätzungen sind automatisch generierte Prognosen "
+    "und stellen keine offiziellen Positionen der Partei dar.</em>"
+)
+
+
+class MatrixFormatter:
+    def format_weekly_report(
+        self,
+        items: List[Tuple[CouncilItem, Optional[LLMResult]]],
+        kw: int,
+        year: int,
+        source_url: str = "",
+    ) -> List[str]:
+        parts = [self.format_header(kw, year, source_url)]
+        for item, result in items:
+            parts.append(self.format_item(item, result))
+        html = "\n".join(parts)
+        chunks = chunk_html(html)
+        # Ensure footer/disclaimer is in every chunk
+        return [chunk + "\n<hr>\n" + self.format_footer() for chunk in chunks]
+
+    def format_header(self, kw: int, year: int, source_url: str = "") -> str:
+        if source_url:
+            source_link = f' – <a href="{source_url}">Ratsinfo</a>'
+        else:
+            source_link = ""
+        return (
+            f"<h3>🔴 RathausRot – Wochenbericht KW {kw}/{year}{source_link}</h3>\n"
+            f"<p>Neue Tagesordnungspunkte und Vorlagen aus dem Stadtrat:</p>\n"
+            f"<hr>\n"
+        )
+
+    def format_item(self, item: CouncilItem, result: Optional[LLMResult]) -> str:
+        title_link = f'<a href="{item.url}">{item.title}</a>'
+        parts = [f"<h3>{title_link}</h3>"]
+        if item.date:
+            parts.append(f"<p><em>Datum: {item.date}</em></p>")
+        if result:
+            parts.append(f"<p>{result.summary}</p>")
+            if result.key_points:
+                kp_items = "".join(f"<li>{kp}</li>" for kp in result.key_points)
+                parts.append(f"<ul>{kp_items}</ul>")
+            emoji = VERDICT_EMOJI.get(result.verdict, "🤔")
+            stars = STAR_RATINGS.get(max(1, min(5, result.relevance_score)), "★★★☆☆")
+            parts.append(
+                f"<p><strong>Einschätzung:</strong> {emoji} {result.verdict}<br>"
+                f"<em>{result.verdict_reason}</em></p>"
+            )
+            parts.append(f"<p><strong>Relevanz:</strong> {stars}</p>")
+        else:
+            parts.append(f"<p><em>Keine KI-Analyse verfügbar.</em></p>")
+        return "\n".join(parts)
+
+    def format_footer(self) -> str:
+        return f"<p>{DISCLAIMER}</p>"
+
+    def format_test_message(self) -> str:
+        return (
+            "<p><strong>🔴 RathausRot Testmeldung</strong></p>"
+            "<p>Der Bot ist korrekt konfiguriert und einsatzbereit.</p>"
+            f"<p>{DISCLAIMER}</p>"
+        )

@@ -1,0 +1,50 @@
+# Konfiguration & Secrets
+config.yaml
+.env
+
+# Laufzeit-Daten
+*.db
+rathausrot.log
+last_run.txt
+bot.pid
+.installed
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+MANIFEST
+pip-wheel-metadata/
+
+# Virtualenv
+venv/
+.venv/
+env/
+ENV/
+
+# Tests & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+*.coveragerc
+
+# IDEs & Editoren
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS / Windows
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs allgemein
+*.log
