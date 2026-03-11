@@ -17,6 +17,14 @@ class MatrixBot:
         self.username = matrix_cfg.get("username", "")
         self.access_token = matrix_cfg.get("access_token", "")
         self.room_id = matrix_cfg.get("room_id", "")
+        room_ids_list = matrix_cfg.get("room_ids", [])
+        if room_ids_list:
+            self.room_ids = list(room_ids_list)
+        elif self.room_id:
+            self.room_ids = [self.room_id]
+        else:
+            self.room_ids = []
+        self._room_ids_set = set(self.room_ids)
         self._client = None
 
     def _get_client(self):
@@ -44,7 +52,7 @@ class MatrixBot:
     def send_message(self, html_content: str) -> None:
         plain = strip_html(html_content)
 
-        async def _send():
+        async def _send_all():
             import nio
             client = self._get_client()
             content = {
@@ -53,17 +61,18 @@ class MatrixBot:
                 "format": "org.matrix.custom.html",
                 "formatted_body": html_content,
             }
-            resp = await client.room_send(
-                room_id=self.room_id,
-                message_type="m.room.message",
-                content=content,
-            )
-            if isinstance(resp, nio.RoomSendError):
-                logger.error("Failed to send message: %s", resp)
-            else:
-                logger.info("Message sent to %s", self.room_id)
+            for room_id in self.room_ids:
+                resp = await client.room_send(
+                    room_id=room_id,
+                    message_type="m.room.message",
+                    content=content,
+                )
+                if isinstance(resp, nio.RoomSendError):
+                    logger.error("Failed to send message to %s: %s", room_id, resp)
+                else:
+                    logger.info("Message sent to %s", room_id)
 
-        asyncio.run(_send())
+        asyncio.run(_send_all())
 
     def send_chunks(self, chunks: List[str]) -> None:
         for i, chunk in enumerate(chunks):
@@ -77,6 +86,12 @@ class MatrixBot:
             "<p><strong>🔴 RathausRot ist aktiv</strong></p>"
             "<p>Der Bot wurde gestartet und überwacht das Ratsinfo-System.</p>"
             "<p>Tippe <code>!hilfe</code> für verfügbare Befehle.</p>"
+        )
+
+    def send_shutdown_message(self) -> None:
+        self.send_message(
+            "<p><strong>🔴 RathausRot wird gestoppt</strong></p>"
+            "<p>Der Bot wurde heruntergefahren.</p>"
         )
 
     def close(self) -> None:
@@ -109,14 +124,14 @@ class MatrixBot:
         async def _on_message(room, event):
             if not isinstance(event, nio.RoomMessageText):
                 return
-            if room.room_id != self.room_id:
+            if room.room_id not in self._room_ids_set:
                 return
             response_html = command_handler.handle(event.sender, event.body)
             if response_html is None:
                 return
             plain = strip_html(response_html)
             send_resp = await client.room_send(
-                room_id=self.room_id,
+                room_id=room.room_id,
                 message_type="m.room.message",
                 content={
                     "msgtype": "m.text",

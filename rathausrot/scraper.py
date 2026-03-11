@@ -1,7 +1,8 @@
 import hashlib
+import json
 import logging
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from io import BytesIO
 from pathlib import Path
 from typing import Iterator, List, Optional
@@ -52,6 +53,76 @@ class DuplicateTracker:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO processed_items (item_id) VALUES (?)", (item_id,)
+            )
+            conn.commit()
+
+
+class RunHistoryTracker:
+    def __init__(self, db_path: str = "processed_items.db"):
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS run_history "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "ran_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+                "item_count INTEGER DEFAULT 0, "
+                "success INTEGER DEFAULT 1, "
+                "error_msg TEXT DEFAULT '')"
+            )
+            conn.commit()
+
+    def record_run(self, item_count: int, success: bool, error_msg: str = "") -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO run_history (item_count, success, error_msg) VALUES (?, ?, ?)",
+                (item_count, 1 if success else 0, error_msg),
+            )
+            conn.commit()
+
+    def get_recent(self, limit: int = 10) -> List[dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT ran_at, item_count, success, error_msg FROM run_history "
+                "ORDER BY ran_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {"ran_at": row[0], "item_count": row[1], "success": bool(row[2]), "error_msg": row[3]}
+            for row in rows
+        ]
+
+
+class LLMCache:
+    def __init__(self, db_path: str = "processed_items.db"):
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS llm_cache "
+                "(item_id TEXT PRIMARY KEY, result_json TEXT, "
+                "cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            conn.commit()
+
+    def get(self, item_id: str) -> Optional[dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT result_json FROM llm_cache WHERE item_id = ?", (item_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    def put(self, item_id: str, result) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_cache (item_id, result_json) VALUES (?, ?)",
+                (item_id, json.dumps(asdict(result))),
             )
             conn.commit()
 

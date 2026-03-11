@@ -14,6 +14,7 @@ DEFAULT_CONFIG = {
         "username": "",
         "access_token": "",
         "room_id": "",
+        "room_ids": [],
     },
     "openrouter": {
         "api_key": "",
@@ -27,6 +28,8 @@ DEFAULT_CONFIG = {
     },
     "bot": {
         "interval_hours": 168,
+        "schedule_day": "monday",
+        "schedule_time": "08:00",
         "party": "",
         "log_level": "INFO",
         "log_file": "rathausrot.log",

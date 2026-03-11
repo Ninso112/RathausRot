@@ -6,9 +6,18 @@ import sys
 logger = logging.getLogger(__name__)
 
 
-def _signal_handler(signum, frame):
-    print("\nShutting down RathausRot...")
-    sys.exit(0)
+def _make_signal_handler(config_manager):
+    def _handler(signum, frame):
+        print("\nShutting down RathausRot...")
+        try:
+            from rathausrot.matrix_bot import MatrixBot
+            bot = MatrixBot(config_manager.load())
+            bot.send_shutdown_message()
+            bot.close()
+        except Exception as exc:
+            print(f"Could not send shutdown message: {exc}")
+        sys.exit(0)
+    return _handler
 
 
 def main():
@@ -35,8 +44,8 @@ def main():
         level=config_manager.get("bot", "log_level", default="INFO"),
     )
 
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _make_signal_handler(config_manager))
+    signal.signal(signal.SIGINT, _make_signal_handler(config_manager))
 
     if args.setup:
         from rathausrot.setup_wizard import run_wizard

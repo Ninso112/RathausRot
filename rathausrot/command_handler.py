@@ -1,7 +1,7 @@
 import logging
 import threading
 from datetime import datetime
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -10,6 +10,9 @@ HELP_TEXT = (
     "<ul>"
     "<li><code>!scrape</code> – Manuellen Scrape jetzt starten</li>"
     "<li><code>!status</code> – Bot-Status anzeigen</li>"
+    "<li><code>!verlauf</code> – Letzte Scrape-Läufe anzeigen</li>"
+    "<li><code>!nächste</code> – Nächsten geplanten Lauf anzeigen</li>"
+    "<li><code>!zusammenfassung</code> – Letzten Bericht erneut senden</li>"
     "<li><code>!stat</code> – Systemauslastung (CPU, RAM, Disk, Uptime)</li>"
     "<li><code>!version</code> – Version anzeigen</li>"
     "<li><code>!hilfe</code> – Diese Hilfe anzeigen</li>"
@@ -18,9 +21,10 @@ HELP_TEXT = (
 
 
 class CommandHandler:
-    def __init__(self, config: dict, scheduler_ref):
+    def __init__(self, config: dict, scheduler_ref, send_extra: Optional[Callable[[List[str]], None]] = None):
         self.config = config
         self.scheduler_ref = scheduler_ref
+        self._send_extra = send_extra
         self.bot_username = config.get("matrix", {}).get("username", "")
         self.allowed_users: list = config.get("bot", {}).get("allowed_users", [])
         self._scrape_lock = threading.Lock()
@@ -31,6 +35,10 @@ class CommandHandler:
             "!help": self._cmd_help,
             "!scrape": self._cmd_scrape,
             "!status": self._cmd_status,
+            "!verlauf": self._cmd_verlauf,
+            "!nächste": self._cmd_naechste,
+            "!nachste": self._cmd_naechste,
+            "!zusammenfassung": self._cmd_zusammenfassung,
             "!stat": self._cmd_stat,
             "!version": self._cmd_version,
         }
@@ -98,7 +106,8 @@ class CommandHandler:
             except Exception:
                 last_run = "Unbekannt"
 
-        interval = self.config.get("bot", {}).get("interval_hours", 168)
+        schedule_day = self.config.get("bot", {}).get("schedule_day", "monday")
+        schedule_time = self.config.get("bot", {}).get("schedule_time", "08:00")
         party = self.config.get("bot", {}).get("party", "–")
         ratsinfo_url = self.config.get("scraper", {}).get("ratsinfo_url", "–")
 
@@ -111,11 +120,54 @@ class CommandHandler:
             "<ul>"
             f"<li><strong>Status:</strong> {scrape_status}</li>"
             f"<li><strong>Letzter Lauf:</strong> {last_run}</li>"
-            f"<li><strong>Intervall:</strong> {interval} Stunden</li>"
+            f"<li><strong>Zeitplan:</strong> {schedule_day.capitalize()} um {schedule_time} Uhr</li>"
             f"<li><strong>Partei:</strong> {party}</li>"
             f"<li><strong>Ratsinfo:</strong> {ratsinfo_url}</li>"
             "</ul>"
         )
+
+    def _cmd_verlauf(self, sender: str, body: str) -> str:
+        entries = self.scheduler_ref._history.get_recent(10)
+        if not entries:
+            return "<p>📋 Noch keine Läufe aufgezeichnet.</p>"
+
+        items_html = ""
+        for entry in entries:
+            icon = "✅" if entry["success"] else "❌"
+            ts = entry["ran_at"]
+            try:
+                dt = datetime.fromisoformat(ts)
+                ts = dt.strftime("%d.%m.%Y %H:%M")
+            except Exception:
+                pass
+            count_str = f", {entry['item_count']} Items" if entry["item_count"] else ""
+            error_str = f" – {entry['error_msg']}" if entry["error_msg"] else ""
+            items_html += f"<li>{icon} {ts}{count_str}{error_str}</li>"
+
+        return (
+            "<p><strong>📋 Letzte Läufe:</strong></p>"
+            f"<ul>{items_html}</ul>"
+        )
+
+    def _cmd_naechste(self, sender: str, body: str) -> str:
+        next_run = self.scheduler_ref.get_next_run_time()
+        if next_run is None:
+            return "<p>⏰ Kein Lauf geplant.</p>"
+        return f"<p>⏰ Nächster Lauf: <strong>{next_run.strftime('%d.%m.%Y %H:%M')} Uhr</strong></p>"
+
+    def _cmd_zusammenfassung(self, sender: str, body: str) -> str:
+        chunks = self.scheduler_ref.get_last_report_chunks()
+        if not chunks:
+            return "<p>📄 Kein Bericht vorhanden. Bitte zuerst <code>!scrape</code> ausführen.</p>"
+        if self._send_extra is None:
+            return "<p>❌ Senderfunktion nicht konfiguriert.</p>"
+
+        def send():
+            self._send_extra(chunks)
+
+        thread = threading.Thread(target=send, daemon=True, name="send-zusammenfassung")
+        thread.start()
+        return "<p>📄 Letzter Bericht wird gesendet...</p>"
 
     def _cmd_stat(self, sender: str, body: str) -> str:
         try:
