@@ -182,6 +182,7 @@ class RatsinfoScraper:
         self.timeout = config.get("scraper", {}).get("request_timeout", 30)
         self.max_pdf_pages = config.get("scraper", {}).get("max_pdf_pages", 10)
         self.keywords = [kw.lower() for kw in config.get("scraper", {}).get("keywords", [])]
+        self.respect_robots_txt = config.get("scraper", {}).get("respect_robots_txt", True)
         self.tracker = DuplicateTracker()
         self.session = requests.Session()
         self.session.headers["User-Agent"] = RATSINFO_USER_AGENT
@@ -213,9 +214,11 @@ class RatsinfoScraper:
         if not self.base_url:
             logger.error("No ratsinfo_url configured")
             return
-        if not self._check_robots(self.base_url):
+        if self.respect_robots_txt and not self._check_robots(self.base_url):
             logger.warning("robots.txt disallows crawling %s", self.base_url)
             return
+        if not self.respect_robots_txt:
+            logger.warning("robots.txt-Prüfung deaktiviert – stelle sicher, dass du zur Nutzung berechtigt bist.")
         system = self.detect_system()
         logger.info("Detected system: %s", system)
         try:

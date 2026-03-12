@@ -27,6 +27,9 @@ scraper:
   # Keyword-Filter (leer = kein Filter, alle Items werden analysiert)
   # Nur Items deren Titel/Text eines dieser Keywords enthält werden verarbeitet
   keywords: []
+  # robots.txt respektieren (true = Standard, false = Prüfung überspringen)
+  # Auf false setzen, wenn das Ratsinfo-System öffentliche Daten sperrt
+  respect_robots_txt: true
 
 bot:
   # Intervall in Stunden (168 = 1 Woche)

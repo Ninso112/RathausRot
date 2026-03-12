@@ -87,6 +87,8 @@ def run_wizard(config_manager) -> None:
     api_key = prompt("OpenRouter API Key", secret=True)
     model = prompt("LLM Modell", "anthropic/claude-sonnet-4")
     ratsinfo_url = prompt("Ratsinfo URL (z.B. https://ratsinfo.example.de/bi/)")
+    robots_input = prompt("robots.txt respektieren? (j/n)", "j").lower()
+    respect_robots_txt = robots_input != "n"
     interval_str = prompt("Abruf-Intervall in Stunden", "168")
     try:
         interval_hours = int(interval_str)
@@ -110,6 +112,7 @@ def run_wizard(config_manager) -> None:
             "ratsinfo_url": ratsinfo_url,
             "max_pdf_pages": 10,
             "request_timeout": 30,
+            "respect_robots_txt": respect_robots_txt,
         },
         "bot": {
             "interval_hours": interval_hours,
@@ -125,6 +128,7 @@ def run_wizard(config_manager) -> None:
     print(f"  Raum-ID:        {room_id}")
     print(f"  Modell:         {model}")
     print(f"  Ratsinfo URL:   {ratsinfo_url}")
+    print(f"  robots.txt:     {'respektieren' if respect_robots_txt else 'ignorieren'}")
     print(f"  Intervall:      {interval_hours}h")
     print(f"  Partei:         {party}")
     print(f"  API Key:        {'*' * min(len(api_key), 8)}...")
