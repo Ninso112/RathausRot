@@ -32,7 +32,7 @@ DEFAULT_CONFIG = {
         "interval_hours": 168,
         "schedule_day": "monday",
         "schedule_time": "08:00",
-        "party": "",
+        "party": "Die Linke",
         "log_level": "INFO",
         "log_file": "rathausrot.log",
         "allowed_users": [],

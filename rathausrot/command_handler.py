@@ -92,7 +92,7 @@ class CommandHandler:
 
             def run():
                 try:
-                    self.scheduler_ref.run_pipeline()
+                    self.scheduler_ref.run_pipeline(force=True)
                 finally:
                     with self._scrape_lock:
                         self._scrape_running = False

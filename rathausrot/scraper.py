@@ -1,7 +1,9 @@
 import hashlib
 import json
 import logging
+import re
 import sqlite3
+from datetime import date, datetime
 from dataclasses import dataclass, field, asdict
 from io import BytesIO
 from pathlib import Path
@@ -187,6 +189,20 @@ class RatsinfoScraper:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = RATSINFO_USER_AGENT
 
+    def _is_future_or_unknown_date(self, date_str: str) -> bool:
+        """Return True if item date is in the future or cannot be parsed (safe default)."""
+        if not date_str:
+            return True
+        # Strip weekday prefix like "Mi, " or "Mo, "
+        cleaned = re.sub(r'^[A-Za-z\u00c0-\u024f]+,\s*', '', date_str.strip())
+        for fmt in ("%d.%m.%Y %H:%M Uhr", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
+            try:
+                dt = datetime.strptime(cleaned, fmt)
+                return dt.date() >= date.today()
+            except ValueError:
+                continue
+        return True  # Unparseable date → include to be safe
+
     def _matches_keywords(self, item: "CouncilItem") -> bool:
         """Return True if item matches configured keywords, or no keywords are set."""
         if not self.keywords:
@@ -202,6 +218,8 @@ class RatsinfoScraper:
             if resp is None:
                 return "unknown"
             text = str(resp)
+            if "sternberg" in text.lower() or "kdvz" in text.lower() or "$SST" in text:
+                return "sternberg"
             if "sessionnet" in text.lower() or "ko-list" in text.lower():
                 return "sessionnet"
             if "allris" in text.lower() or "risinh" in text.lower():
@@ -210,7 +228,7 @@ class RatsinfoScraper:
             logger.warning("detect_system error: %s", exc)
         return "unknown"
 
-    def fetch_new_items(self) -> Iterator[CouncilItem]:
+    def fetch_new_items(self, force: bool = False) -> Iterator[CouncilItem]:
         if not self.base_url:
             logger.error("No ratsinfo_url configured")
             return
@@ -223,12 +241,17 @@ class RatsinfoScraper:
         logger.info("Detected system: %s", system)
         try:
             if system == "sessionnet":
-                items = self._fetch_sessionnet()
+                items = self._fetch_sessionnet(force=force)
             elif system == "allris":
-                items = self._fetch_allris()
+                items = self._fetch_allris(force=force)
+            elif system == "sternberg":
+                items = self._fetch_sternberg(force=force)
             else:
-                items = self._fetch_generic()
+                items = self._fetch_generic(force=force)
             for item in items:
+                if not self._is_future_or_unknown_date(item.date):
+                    logger.debug("Item skipped (date in past): %s (%s)", item.title, item.date)
+                    continue
                 if self._matches_keywords(item):
                     yield item
                 else:
@@ -236,7 +259,7 @@ class RatsinfoScraper:
         except Exception as exc:
             logger.error("fetch_new_items failed: %s", exc)
 
-    def _fetch_and_parse(self, selectors: list, source_system: str) -> Iterator[CouncilItem]:
+    def _fetch_and_parse(self, selectors: list, source_system: str, force: bool = False) -> Iterator[CouncilItem]:
         soup = self._fetch_page(self.base_url)
         if soup is None:
             return
@@ -244,23 +267,88 @@ class RatsinfoScraper:
             for element in soup.select(selector):
                 try:
                     item = self._parse_list_item(element, source_system)
-                    if item and self.tracker.is_new(item.id):
+                    if item and (force or self.tracker.is_new(item.id)):
                         rate_limit_sleep()
                         yield item
                 except Exception as exc:
                     logger.warning("Error parsing %s item: %s", source_system, exc)
 
-    def _fetch_sessionnet(self) -> Iterator[CouncilItem]:
+    def _fetch_sessionnet(self, force: bool = False) -> Iterator[CouncilItem]:
         yield from self._fetch_and_parse(
-            [".ko-list li", ".to-list li", ".vorl-list li"], "sessionnet"
+            [".ko-list li", ".to-list li", ".vorl-list li"], "sessionnet", force=force
         )
 
-    def _fetch_allris(self) -> Iterator[CouncilItem]:
+    def _fetch_allris(self, force: bool = False) -> Iterator[CouncilItem]:
         yield from self._fetch_and_parse(
-            ["#risinh tr", ".title"], "allris"
+            ["#risinh tr", ".title"], "allris", force=force
         )
 
-    def _fetch_generic(self) -> Iterator[CouncilItem]:
+    def _fetch_sternberg(self, force: bool = False) -> Iterator[CouncilItem]:
+        vorlagen_url = urljoin(self.base_url, "/vorlagen")
+        soup = self._fetch_page(vorlagen_url)
+        if soup is None:
+            return
+        table = soup.find(class_="vorlagenübersicht") or soup.find(class_="vorlagenuebersicht")
+        if table is None:
+            # Fallback: search for vorgang links directly
+            rows = soup.find_all("a", href=lambda h: h and "/vorgang/?__=" in h)
+        else:
+            rows = table.find_all("a", href=lambda h: h and "/vorgang/?__=" in h)
+        for a_tag in rows:
+            try:
+                href = a_tag["href"]
+                url = urljoin(self.base_url, href)
+                if not _is_safe_url(url):
+                    continue
+                title = a_tag.get_text(strip=True)
+                if not title:
+                    continue
+                # Try to find date from nearby tops link
+                parent = a_tag.find_parent(["tr", "li", "div"])
+                date_str = ""
+                if parent:
+                    tops_link = parent.find("a", href=lambda h: h and "/tops/?__=" in h)
+                    if tops_link:
+                        date_str = tops_link.get_text(strip=True)
+                item_id = self._build_item_id(url, title)
+                if not force and not self.tracker.is_new(item_id):
+                    logger.debug("Stopping at known Sternberg item: %s", title)
+                    break
+                rate_limit_sleep()
+                item = self._parse_sternberg_item(item_id, title, url, date_str)
+                if item:
+                    yield item
+            except Exception as exc:
+                logger.warning("Error in Sternberg fetch: %s", exc)
+
+    def _parse_sternberg_item(self, item_id: str, title: str, url: str, date_str: str) -> Optional[CouncilItem]:
+        detail_soup = self._fetch_page(url)
+        body_text = ""
+        pdf_texts = []
+        if detail_soup:
+            body_text = detail_soup.get_text(" ", strip=True)
+            for pdf_link in detail_soup.find_all("a", href=lambda h: h and "/sdnetrim/" in h):
+                pdf_url = urljoin(url, pdf_link["href"])
+                if not _is_safe_url(pdf_url):
+                    continue
+                try:
+                    text = self._extract_pdf_text(pdf_url, self.max_pdf_pages)
+                    if text:
+                        pdf_texts.append(text)
+                except Exception as exc:
+                    logger.warning("Sternberg PDF extraction failed %s: %s", pdf_url, exc)
+        return CouncilItem(
+            id=item_id,
+            title=title,
+            url=url,
+            item_type="vorlage",
+            date=date_str,
+            body_text=truncate_text(body_text, 12000),
+            pdf_texts=pdf_texts,
+            source_system="sternberg",
+        )
+
+    def _fetch_generic(self, force: bool = False) -> Iterator[CouncilItem]:
         soup = self._fetch_page(self.base_url)
         if soup is None:
             return
@@ -276,7 +364,7 @@ class RatsinfoScraper:
                 if not title:
                     continue
                 item_id = self._build_item_id(url, title)
-                if not self.tracker.is_new(item_id):
+                if not force and not self.tracker.is_new(item_id):
                     continue
                 rate_limit_sleep()
                 detail = self._fetch_page(url)

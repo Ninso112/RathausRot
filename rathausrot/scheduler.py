@@ -32,8 +32,8 @@ class BotScheduler:
         self._last_report_chunks: List[str] = []
         self._stop_event = threading.Event()
 
-    def run_pipeline(self) -> None:
-        logger.info("Starting pipeline run")
+    def run_pipeline(self, force: bool = False) -> None:
+        logger.info("Starting pipeline run (force=%s)", force)
         item_count = 0
         try:
             scraper = RatsinfoScraper(self.config)
@@ -59,7 +59,7 @@ class BotScheduler:
                 items_with_results.append((item, result))
                 scraper.tracker.mark_processed(item.id)
 
-            for item in scraper.fetch_new_items():
+            for item in scraper.fetch_new_items(force=force):
                 logger.info("Analyzing item: %s", item.title)
                 cached = self._llm_cache.get(item.id)
                 if cached is not None:

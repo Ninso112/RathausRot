@@ -150,9 +150,12 @@ class MatrixBot:
             # replay messages that arrived before the bot started.
             logger.info("Command listener: performing initial sync...")
             init_resp = await client.sync(timeout=0, full_state=True)
-            since = getattr(init_resp, "next_batch", None)
+            if isinstance(init_resp, nio.SyncError):
+                logger.error("Initial sync failed, aborting listener: %s", init_resp)
+                return
+            client.next_batch = init_resp.next_batch
             logger.info("Command listener ready – listening for commands")
-            await client.sync_forever(timeout=30000, since=since, full_state=False)
+            await client.sync_forever(timeout=30000, full_state=False)
         except asyncio.CancelledError:
             logger.info("Command listener cancelled")
         except Exception as exc:

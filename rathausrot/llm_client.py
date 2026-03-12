@@ -19,7 +19,10 @@ SYSTEM_PROMPT_DISCLAIMER = (
 
 JSON_SCHEMA_EXAMPLE = """{
   "summary": "Kurze Zusammenfassung des Tagesordnungspunkts",
-  "key_points": ["Punkt 1", "Punkt 2", "Punkt 3"],
+  "key_points": [
+    {"text": "Punkt 1", "reason": "Warum Die Linke so reagieren würde"},
+    {"text": "Punkt 2", "reason": "Warum Die Linke so reagieren würde"}
+  ],
   "verdict": "Zustimmung|Ablehnung|Enthaltung",
   "verdict_reason": "Begründung der Einschätzung",
   "relevance_score": 3
@@ -69,6 +72,9 @@ class OpenRouterClient:
                 f"Du bist ein Assistent für kommunalpolitische Analyse, der die Fraktion {self.party} "
                 f"bei der Vorbereitung von Ratssitzungen unterstützt. "
                 f"Antworte ausschließlich mit validem JSON gemäß dem angegebenen Schema.\n\n"
+                f"Für jeden Eintrag in key_points liefere ein Objekt mit 'text' (der Kernaussage) "
+                f"und 'reason' (eine Begründung, warum {self.party} aus ihrer politischen Perspektive "
+                f"so auf diesen Punkt reagieren würde).\n\n"
                 f"{SYSTEM_PROMPT_DISCLAIMER}"
             )
         body = truncate_text(item.body_text, 12000)
@@ -161,9 +167,16 @@ class OpenRouterClient:
             score = int(data.get("relevance_score", 3))
         except (ValueError, TypeError):
             score = 3
+        raw_kps = data.get("key_points", [])
+        key_points = []
+        for kp in raw_kps:
+            if isinstance(kp, str):
+                key_points.append({"text": kp, "reason": ""})
+            elif isinstance(kp, dict):
+                key_points.append(kp)
         return LLMResult(
             summary=data.get("summary", ""),
-            key_points=data.get("key_points", []),
+            key_points=key_points,
             verdict=data.get("verdict", "Enthaltung"),
             verdict_reason=data.get("verdict_reason", ""),
             relevance_score=max(1, min(5, score)),

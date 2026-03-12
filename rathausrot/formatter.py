@@ -65,7 +65,17 @@ class MatrixFormatter:
         if result:
             parts.append(f"<p>{html.escape(result.summary)}</p>")
             if result.key_points:
-                kp_items = "".join(f"<li>{html.escape(kp)}</li>" for kp in result.key_points)
+                kp_items = ""
+                for kp in result.key_points:
+                    if isinstance(kp, dict):
+                        text = html.escape(kp.get("text", ""))
+                        reason = kp.get("reason", "")
+                        if reason:
+                            kp_items += f"<li><strong>{text}</strong><br><em>Grund: {html.escape(reason)}</em></li>"
+                        else:
+                            kp_items += f"<li>{text}</li>"
+                    else:
+                        kp_items += f"<li>{html.escape(str(kp))}</li>"
                 parts.append(f"<ul>{kp_items}</ul>")
             emoji = VERDICT_EMOJI.get(result.verdict, "🤔")
             stars = STAR_RATINGS.get(max(1, min(5, result.relevance_score)), "★★★☆☆")
