@@ -145,6 +145,52 @@ class RetryQueue:
             conn.commit()
 
 
+class CouncilItemStore:
+    """Persistent archive of scraped CouncilItems for full-text search."""
+
+    def __init__(self, db_path: str = "processed_items.db"):
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS council_items "
+                "(item_id TEXT PRIMARY KEY, title TEXT, url TEXT, "
+                "date TEXT, item_type TEXT, source_system TEXT, "
+                "body_text TEXT, "
+                "stored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
+            conn.commit()
+
+    def store(self, item: "CouncilItem") -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO council_items "
+                "(item_id, title, url, date, item_type, source_system, body_text) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (item.id, item.title, item.url, item.date,
+                 item.item_type, item.source_system, item.body_text),
+            )
+            conn.commit()
+
+    def search(self, query: str, limit: int = 10) -> List[dict]:
+        pattern = f"%{query}%"
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT item_id, title, url, date, source_system, stored_at "
+                "FROM council_items "
+                "WHERE title LIKE ? OR body_text LIKE ? "
+                "ORDER BY stored_at DESC LIMIT ?",
+                (pattern, pattern, limit),
+            ).fetchall()
+        return [
+            {"id": r[0], "title": r[1], "url": r[2], "date": r[3],
+             "source_system": r[4], "stored_at": r[5]}
+            for r in rows
+        ]
+
+
 class LLMCache:
     def __init__(self, db_path: str = "processed_items.db"):
         self.db_path = db_path
@@ -188,6 +234,7 @@ class RatsinfoScraper:
         self.tracker = DuplicateTracker()
         self.session = requests.Session()
         self.session.headers["User-Agent"] = RATSINFO_USER_AGENT
+        self._detected_system: Optional[str] = None
 
     def _is_future_or_unknown_date(self, date_str: str) -> bool:
         """Return True if item date is in the future or cannot be parsed (safe default)."""
@@ -211,6 +258,8 @@ class RatsinfoScraper:
         return any(kw in text for kw in self.keywords)
 
     def detect_system(self) -> str:
+        if self._detected_system is not None:
+            return self._detected_system
         if not self.base_url:
             return "unknown"
         try:
@@ -219,14 +268,43 @@ class RatsinfoScraper:
                 return "unknown"
             text = str(resp)
             if "sternberg" in text.lower() or "kdvz" in text.lower() or "$SST" in text:
-                return "sternberg"
-            if "sessionnet" in text.lower() or "ko-list" in text.lower():
-                return "sessionnet"
-            if "allris" in text.lower() or "risinh" in text.lower():
-                return "allris"
+                self._detected_system = "sternberg"
+            elif "sessionnet" in text.lower() or "ko-list" in text.lower():
+                self._detected_system = "sessionnet"
+            elif "allris" in text.lower() or "risinh" in text.lower():
+                self._detected_system = "allris"
+            else:
+                self._detected_system = "unknown"
         except Exception as exc:
             logger.warning("detect_system error: %s", exc)
-        return "unknown"
+            self._detected_system = "unknown"
+        return self._detected_system
+
+    def count_upcoming_items(self) -> Optional[int]:
+        """Return the number of upcoming (future-dated) items if quickly determinable."""
+        system = self.detect_system()
+        if system == "sternberg":
+            return self._count_sternberg_upcoming()
+        return None
+
+    def _count_sternberg_upcoming(self) -> Optional[int]:
+        vorlagen_url = urljoin(self.base_url, "/vorlagen")
+        soup = self._fetch_page(vorlagen_url)
+        if soup is None:
+            return None
+        table = soup.find(class_="vorlagenübersicht") or soup.find(class_="vorlagenuebersicht")
+        links = (table or soup).find_all("a", href=lambda h: h and "/vorgang/?__=" in h)
+        count = 0
+        for a_tag in links:
+            parent = a_tag.find_parent(["tr", "li", "div"])
+            date_str = ""
+            if parent:
+                tops_link = parent.find("a", href=lambda h: h and "/tops/?__=" in h)
+                if tops_link:
+                    date_str = tops_link.get_text(strip=True)
+            if self._is_future_or_unknown_date(date_str):
+                count += 1
+        return count if count > 0 else None
 
     def fetch_new_items(self, force: bool = False) -> Iterator[CouncilItem]:
         if not self.base_url:
@@ -314,6 +392,10 @@ class RatsinfoScraper:
                 if not force and not self.tracker.is_new(item_id):
                     logger.debug("Stopping at known Sternberg item: %s", title)
                     break
+                # Skip detail fetch for past items early (saves HTTP requests)
+                if date_str and not self._is_future_or_unknown_date(date_str):
+                    logger.debug("Sternberg item skipped early (past date): %s (%s)", title, date_str)
+                    continue
                 rate_limit_sleep()
                 item = self._parse_sternberg_item(item_id, title, url, date_str)
                 if item:
@@ -458,9 +540,10 @@ class RatsinfoScraper:
         try:
             parsed = urlparse(url)
             robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+            resp = self.session.get(robots_url, timeout=self.timeout)
+            resp.raise_for_status()
             rp = RobotFileParser()
-            rp.set_url(robots_url)
-            rp.read()
+            rp.parse(resp.text.splitlines())
             return rp.can_fetch(RATSINFO_USER_AGENT, url)
         except Exception as exc:
             logger.warning("robots.txt check failed: %s", exc)

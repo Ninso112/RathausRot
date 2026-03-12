@@ -1,6 +1,7 @@
 import json
 import logging
 import threading
+import time
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -13,6 +14,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     """Simple HTTP handler for health check endpoint."""
 
     scheduler_ref = None
+    _start_time: float = time.time()
 
     def do_GET(self):
         if self.path != "/health":
@@ -37,10 +39,38 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                     with ch._scrape_lock:
                         scrape_running = ch._scrape_running
 
+        # version
+        try:
+            from rathausrot import __version__
+            version = __version__
+        except Exception:
+            version = "unknown"
+
+        # uptime
+        uptime_seconds = int(time.time() - self.__class__._start_time)
+
+        # next_run
+        next_run = None
+        if self.scheduler_ref and hasattr(self.scheduler_ref, 'get_next_run_time'):
+            nr = self.scheduler_ref.get_next_run_time()
+            if nr is not None:
+                next_run = nr.isoformat()
+
+        # last_run_error
+        last_run_error = None
+        if self.scheduler_ref and hasattr(self.scheduler_ref, '_history'):
+            recent = self.scheduler_ref._history.get_recent(1)
+            if recent and not recent[0]["success"]:
+                last_run_error = recent[0]["error_msg"] or None
+
         body = json.dumps({
             "status": "ok",
+            "version": version,
+            "uptime_seconds": uptime_seconds,
             "last_run": last_run,
+            "next_run": next_run,
             "scrape_running": scrape_running,
+            "last_run_error": last_run_error,
         })
 
         self.send_response(200)

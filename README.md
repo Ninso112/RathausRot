@@ -32,6 +32,7 @@
 - **PDF-Extraktion** – Anhänge und Vorlagen werden automatisch heruntergeladen und ausgelesen
 - **Keyword-Filter** – Optional nur bestimmte Themen verarbeiten
 - **Duplikat-Erkennung** – SQLite-Datenbank verhindert doppelte Meldungen
+- **Item-Archiv** – Alle gescrapten Vorlagen werden in SQLite gespeichert und sind durchsuchbar
 - **Robots.txt-Respekt** – Ethisches Crawling mit Rate-Limiting
 
 ### KI-Analyse
@@ -49,7 +50,7 @@
 - **Startup/Shutdown-Nachrichten** – Bot meldet sich an und ab
 
 ### Scheduling & Betrieb
-- **Zeitgesteuerter Betrieb** – Wochentag und Uhrzeit konfigurierbar
+- **Intervall-Polling** – Konfigurierbares Polling-Intervall in Minuten (Standard: alle 360 Minuten)
 - **Manueller Scrape** – Per Chat-Befehl oder CLI-Flag `--run-now`
 - **Health-Check-Endpoint** – HTTP `/health` für Monitoring
 - **Systemstatistiken** – CPU, RAM, Disk und Uptime per Chat abrufbar
@@ -68,14 +69,14 @@
 |--------|-------------|
 | `!hilfe` | Verfügbare Befehle anzeigen |
 | `!scrape` | Manuellen Scrape sofort starten |
-| `!status` | Bot-Status anzeigen (Uptime, nächster Lauf) |
+| `!abbruch` | Laufenden Scrape abbrechen |
+| `!suche <Begriff>` | Gespeicherte Vorlagen durchsuchen (z.B. `!suche Haushalt`) |
+| `!status` | Bot-Status anzeigen inkl. Scrape-Fortschritt und ETA |
 | `!verlauf` | Letzte Scrape-Läufe anzeigen |
 | `!nächste` | Nächsten geplanten Lauf anzeigen |
-| `!zusammenfassung` | Letzten Bericht erneut senden |
 | `!statistik` | Scrape-Statistiken anzeigen |
 | `!stat` | Systemauslastung (CPU, RAM, Disk, Uptime) |
 | `!log [level] [anzahl]` | Bot-Logs anzeigen (z.B. `!log error 20`) |
-| `!export` | Letzten Bericht als Datei exportieren |
 | `!version` | Version anzeigen |
 
 ---
@@ -196,10 +197,8 @@ scraper:
   keywords: []                           # Keyword-Filter (leer = alles)
 
 bot:
-  interval_hours: 168                    # 24 = täglich, 168 = wöchentlich
-  schedule_day: "monday"                 # Wochentag ("daily" für täglich)
-  schedule_time: "08:00"                 # Uhrzeit
-  party: "SPD"                           # Partei für KI-Kontext
+  interval_minutes: 360                  # Polling-Intervall in Minuten (Standard: 6 Stunden)
+  party: "Die Linke"                     # Partei für KI-Kontext
   relevance_threshold: 1                 # 1-5 (1 = alles, 5 = nur top)
   healthcheck_port: 0                    # HTTP-Port (0 = deaktiviert)
   log_level: "INFO"
@@ -280,7 +279,7 @@ A: Prüfe ob die `ratsinfo_url` korrekt ist und ob das System SessionNet oder Al
 A: Stelle sicher, dass dein Matrix-Account keine Zwei-Faktor-Authentifizierung hat. Erstelle ggf. einen dedizierten Bot-Account.
 
 **Q: Kann ich das Intervall ändern?**
-A: Ja – ändere `interval_hours` in `config.yaml`. 24 = täglich, 168 = wöchentlich.
+A: Ja – ändere `interval_minutes` in `config.yaml`. 60 = stündlich, 360 = alle 6 Stunden (Standard).
 
 **Q: Wie füge ich den Bot zu einem privaten Raum hinzu?**
 A: Lade den Bot-Account in den Raum ein, bevor du ihn startest.

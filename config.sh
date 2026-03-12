@@ -11,17 +11,14 @@ if [ ! -d "venv" ]; then
 fi
 
 if [ -f "config.yaml" ]; then
-    echo -e "${YELLOW}Warnung: Eine bestehende Konfiguration wurde gefunden.${NC}"
-    echo -n "Bestehende Konfiguration wird überschrieben. Fortfahren? [j/N]: "
-    read -r CONFIRM
-    if [ "${CONFIRM,,}" != "j" ]; then
-        echo "Abgebrochen."
-        exit 0
-    fi
+    venv/bin/python -c "
+from rathausrot.config_manager import ConfigManager
+from rathausrot.setup_wizard import run_edit_wizard
+run_edit_wizard(ConfigManager())
+"
+else
+    venv/bin/python -m rathausrot --setup
 fi
 
-venv/bin/python -m rathausrot --setup
-
 echo ""
-echo -e "${GREEN}Konfiguration abgeschlossen.${NC}"
-echo "Bot starten mit: bash start.sh"
+echo -e "${GREEN}Fertig. Bot starten mit: bash start.sh${NC}"

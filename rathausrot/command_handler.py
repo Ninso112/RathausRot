@@ -10,14 +10,15 @@ HELP_TEXT = (
     "<p><strong>🔴 RathausRot – Verfügbare Befehle:</strong></p>"
     "<ul>"
     "<li><code>!scrape</code> – Manuellen Scrape jetzt starten</li>"
+    "<li><code>!abbruch</code> – Laufenden Scrape abbrechen</li>"
+    "<li><code>!suche &lt;Begriff&gt;</code> – Gespeicherte Vorlagen durchsuchen</li>"
     "<li><code>!status</code> – Bot-Status anzeigen</li>"
     "<li><code>!verlauf</code> – Letzte Scrape-Läufe anzeigen</li>"
     "<li><code>!nächste</code> – Nächsten geplanten Lauf anzeigen</li>"
-    "<li><code>!zusammenfassung</code> – Letzten Bericht erneut senden</li>"
     "<li><code>!statistik</code> – Scrape-Statistiken anzeigen</li>"
     "<li><code>!stat</code> – Systemauslastung (CPU, RAM, Disk, Uptime)</li>"
     "<li><code>!log [level] [anzahl]</code> – Bot-Logs anzeigen</li>"
-    "<li><code>!export</code> – Letzten Bericht als Datei exportieren</li>"
+    "<li><code>!config</code> – Aktuelle Konfiguration anzeigen</li>"
     "<li><code>!version</code> – Version anzeigen</li>"
     "<li><code>!hilfe</code> – Diese Hilfe anzeigen</li>"
     "</ul>"
@@ -38,16 +39,17 @@ class CommandHandler:
             "!hilfe": self._cmd_help,
             "!help": self._cmd_help,
             "!scrape": self._cmd_scrape,
+            "!abbruch": self._cmd_abbruch,
+            "!suche": self._cmd_suche,
             "!status": self._cmd_status,
             "!verlauf": self._cmd_verlauf,
             "!nächste": self._cmd_naechste,
             "!nachste": self._cmd_naechste,
-            "!zusammenfassung": self._cmd_zusammenfassung,
             "!stat": self._cmd_stat,
             "!statistik": self._cmd_statistik,
             "!log": self._cmd_log,
-            "!export": self._cmd_export,
             "!version": self._cmd_version,
+            "!config": self._cmd_config,
         }
 
     def is_allowed(self, sender: str) -> bool:
@@ -101,6 +103,38 @@ class CommandHandler:
             thread.start()
         return "<p>🔄 Manueller Scrape gestartet. Ergebnisse folgen in Kürze.</p>"
 
+    def _cmd_suche(self, sender: str, body: str) -> str:
+        parts = body.split(None, 1)
+        if len(parts) < 2 or not parts[1].strip():
+            return "<p>Verwendung: <code>!suche &lt;Suchbegriff&gt;</code></p>"
+        query = parts[1].strip()
+        from rathausrot.scraper import CouncilItemStore
+        results = CouncilItemStore().search(query, limit=10)
+        if not results:
+            return f"<p>🔍 Keine Ergebnisse für <strong>{html.escape(query)}</strong>.</p>"
+        items_html = ""
+        for r in results:
+            title = html.escape(r["title"])
+            url = html.escape(r["url"], quote=True)
+            date = html.escape(r["date"]) if r["date"] else "–"
+            stored = r["stored_at"][:10] if r["stored_at"] else "–"
+            items_html += (
+                f'<li><a href="{url}">{title}</a>'
+                f' <em>({date}, gespeichert: {stored})</em></li>'
+            )
+        return (
+            f"<p>🔍 <strong>{html.escape(query)}</strong> – {len(results)} Treffer:</p>"
+            f"<ul>{items_html}</ul>"
+        )
+
+    def _cmd_abbruch(self, sender: str, body: str) -> str:
+        with self._scrape_lock:
+            running = self._scrape_running
+        if not running:
+            return "<p>ℹ️ Kein Scrape läuft gerade.</p>"
+        self.scheduler_ref.cancel_pipeline()
+        return "<p>🛑 Abbruch angefordert – das aktuelle Item wird noch fertig verarbeitet.</p>"
+
     def _cmd_status(self, sender: str, body: str) -> str:
         from rathausrot.scheduler import LAST_RUN_FILE
 
@@ -113,21 +147,49 @@ class CommandHandler:
             except Exception:
                 last_run = "Unbekannt"
 
-        schedule_day = self.config.get("bot", {}).get("schedule_day", "monday")
-        schedule_time = self.config.get("bot", {}).get("schedule_time", "08:00")
+        interval_minutes = self.config.get("bot", {}).get("interval_minutes", 360)
         party = self.config.get("bot", {}).get("party", "–")
         ratsinfo_url = self.config.get("scraper", {}).get("ratsinfo_url", "–")
 
         with self._scrape_lock:
             running = self._scrape_running
-        scrape_status = "⏳ Scrape läuft gerade" if running else "✅ Bereit"
+
+        if running:
+            prog = self.scheduler_ref.get_pipeline_progress()
+            done = prog.get("items_done", 0)
+            total = prog.get("items_total")
+            current = prog.get("current_item", "")
+            started_at = prog.get("started_at")
+
+            if total is not None and total > 0:
+                pct = int(done / total * 100)
+                bar_filled = round(pct / 10)
+                bar = "█" * bar_filled + "░" * (10 - bar_filled)
+                progress_line = f"{done}/{total} Items ({pct}%) [{bar}]"
+                if done > 0 and started_at:
+                    elapsed = (datetime.now() - started_at).total_seconds()
+                    avg = elapsed / done
+                    remaining_secs = (total - done) * avg
+                    progress_line += f" – noch ca. {_format_duration(remaining_secs)}"
+            else:
+                progress_line = f"{done} Items analysiert"
+                if done > 0 and started_at:
+                    elapsed = (datetime.now() - started_at).total_seconds()
+                    avg = elapsed / done
+                    progress_line += f" (~{avg:.0f}s/Item)"
+
+            scrape_status = f"⏳ Scrape läuft – {progress_line}"
+            if current:
+                scrape_status += f"<br>&nbsp;&nbsp;<em>Aktuell: {html.escape(current[:70])}</em>"
+        else:
+            scrape_status = "✅ Bereit"
 
         return (
             "<p><strong>🔴 RathausRot Status</strong></p>"
             "<ul>"
             f"<li><strong>Status:</strong> {scrape_status}</li>"
             f"<li><strong>Letzter Lauf:</strong> {last_run}</li>"
-            f"<li><strong>Zeitplan:</strong> {schedule_day.capitalize()} um {schedule_time} Uhr</li>"
+            f"<li><strong>Intervall:</strong> alle {interval_minutes} Minuten</li>"
             f"<li><strong>Partei:</strong> {party}</li>"
             f"<li><strong>Ratsinfo:</strong> {ratsinfo_url}</li>"
             "</ul>"
@@ -161,20 +223,6 @@ class CommandHandler:
         if next_run is None:
             return "<p>⏰ Kein Lauf geplant.</p>"
         return f"<p>⏰ Nächster Lauf: <strong>{next_run.strftime('%d.%m.%Y %H:%M')} Uhr</strong></p>"
-
-    def _cmd_zusammenfassung(self, sender: str, body: str) -> str:
-        chunks = self.scheduler_ref.get_last_report_chunks()
-        if not chunks:
-            return "<p>📄 Kein Bericht vorhanden. Bitte zuerst <code>!scrape</code> ausführen.</p>"
-        if self._send_extra is None:
-            return "<p>❌ Senderfunktion nicht konfiguriert.</p>"
-
-        def send():
-            self._send_extra(chunks)
-
-        thread = threading.Thread(target=send, daemon=True, name="send-zusammenfassung")
-        thread.start()
-        return "<p>📄 Letzter Bericht wird gesendet...</p>"
 
     def _cmd_stat(self, sender: str, body: str) -> str:
         try:
@@ -309,33 +357,35 @@ class CommandHandler:
 
         return response
 
-    def _cmd_export(self, sender: str, body: str) -> str:
-        chunks = self.scheduler_ref.get_last_report_chunks()
-        if not chunks:
-            return "<p>Kein Bericht vorhanden. Bitte zuerst <code>!scrape</code> ausführen.</p>"
-
-        from rathausrot.utils import strip_html
-        full_report = "\n\n".join(strip_html(chunk) for chunk in chunks)
-
-        if self._send_extra is None:
-            return "<p>Senderfunktion nicht konfiguriert.</p>"
-
-        # Send as a pre-formatted text block
-        escaped = html.escape(full_report)
-        export_html = f"<p><strong>Bericht-Export:</strong></p><pre>{escaped}</pre>"
-
-        def send():
-            from rathausrot.utils import chunk_html
-            export_chunks = chunk_html(export_html)
-            self._send_extra(export_chunks)
-
-        thread = threading.Thread(target=send, daemon=True, name="send-export")
-        thread.start()
-        return "<p>Bericht wird exportiert...</p>"
-
     def _cmd_version(self, sender: str, body: str) -> str:
         from rathausrot import __version__
         return f"<p>🔴 RathausRot v{__version__}</p>"
+
+    def _cmd_config(self, sender: str, body: str) -> str:
+        s = self.config.get("scraper", {})
+        b = self.config.get("bot", {})
+        o = self.config.get("openrouter", {})
+        ratsinfo_url = html.escape(s.get("ratsinfo_url", "–"))
+        model = html.escape(o.get("model", "–"))
+        party = html.escape(b.get("party", "–"))
+        interval_minutes = b.get("interval_minutes", "–")
+        relevance_threshold = b.get("relevance_threshold", 1)
+        keywords = s.get("keywords", [])
+        keywords_str = html.escape(", ".join(keywords)) if keywords else "(keine)"
+        allowed_users = b.get("allowed_users", [])
+        allowed_str = html.escape(", ".join(allowed_users)) if allowed_users else "(alle)"
+        return (
+            "<p><strong>⚙️ RathausRot – Konfiguration</strong></p>"
+            "<ul>"
+            f"<li><strong>Ratsinfo URL:</strong> {ratsinfo_url}</li>"
+            f"<li><strong>Modell:</strong> {model}</li>"
+            f"<li><strong>Partei:</strong> {party}</li>"
+            f"<li><strong>Intervall:</strong> {interval_minutes} min</li>"
+            f"<li><strong>Relevanz-Schwelle:</strong> {relevance_threshold}</li>"
+            f"<li><strong>Schlüsselwörter:</strong> {keywords_str}</li>"
+            f"<li><strong>Erlaubte Nutzer:</strong> {allowed_str}</li>"
+            "</ul>"
+        )
 
 
 def _format_duration(seconds: float) -> str:

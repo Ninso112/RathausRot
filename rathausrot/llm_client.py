@@ -107,12 +107,21 @@ class OpenRouterClient:
             ],
             "max_tokens": self.max_tokens,
         }
-        delays = [2, 4, 8]
+        delays = [5, 15, 45]
         for attempt, delay in enumerate(delays, 1):
             try:
                 resp = requests.post(
                     self.API_URL, headers=headers, json=payload, timeout=60
                 )
+                if resp.status_code in (429, 503):
+                    retry_after = int(resp.headers.get("Retry-After", delay))
+                    logger.warning(
+                        "LLM rate limited (HTTP %d), waiting %ds (attempt %d)",
+                        resp.status_code, retry_after, attempt,
+                    )
+                    if attempt < len(delays):
+                        time.sleep(retry_after)
+                    continue
                 resp.raise_for_status()
                 data = resp.json()
                 tokens = data.get("usage", {}).get("total_tokens", 0)
@@ -125,7 +134,7 @@ class OpenRouterClient:
                         time.sleep(delay)
                     continue
                 return content
-            except requests.exceptions.RequestException as exc:
+            except (requests.exceptions.RequestException, TimeoutError) as exc:
                 logger.warning("LLM request attempt %d failed: %s", attempt, exc)
                 if attempt < len(delays):
                     time.sleep(delay)

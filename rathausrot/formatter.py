@@ -29,20 +29,21 @@ DISCLAIMER = (
 
 
 class MatrixFormatter:
-    def format_weekly_report(
+    def format_single_item_report(
         self,
-        items: List[Tuple[CouncilItem, Optional[LLMResult]]],
-        kw: int,
-        year: int,
+        item: CouncilItem,
+        result: Optional[LLMResult],
         source_url: str = "",
     ) -> List[str]:
-        parts = [self.format_header(kw, year, source_url)]
-        for item, result in items:
-            parts.append(self.format_item(item, result))
-        html = "\n".join(parts)
-        chunks = chunk_html(html)
-        # Ensure footer/disclaimer is in every chunk
-        return [chunk + "\n<hr>\n" + self.format_footer() for chunk in chunks]
+        if source_url:
+            source_link = f' – <a href="{html.escape(source_url, quote=True)}">Ratsinfo</a>'
+        else:
+            source_link = ""
+        header = f"<p>🔴 <strong>Neue Vorlage</strong>{source_link}</p>\n<hr>\n"
+        body = self.format_item(item, result)
+        footer = self.format_footer()
+        full_html = header + body + "\n<hr>\n" + footer
+        return chunk_html(full_html)
 
     def format_header(self, kw: int, year: int, source_url: str = "") -> str:
         if source_url:

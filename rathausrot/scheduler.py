@@ -9,7 +9,7 @@ import schedule
 import time
 
 from rathausrot.config_manager import ConfigManager
-from rathausrot.scraper import RatsinfoScraper, RunHistoryTracker, LLMCache, RetryQueue
+from rathausrot.scraper import RatsinfoScraper, RunHistoryTracker, LLMCache, RetryQueue, CouncilItemStore
 from rathausrot.llm_client import OpenRouterClient, LLMResult
 from rathausrot.formatter import MatrixFormatter
 from rathausrot.matrix_bot import MatrixBot
@@ -29,19 +29,35 @@ class BotScheduler:
         self._history = RunHistoryTracker()
         self._llm_cache = LLMCache()
         self._retry_queue = RetryQueue()
-        self._last_report_chunks: List[str] = []
         self._stop_event = threading.Event()
+        self._item_store = CouncilItemStore()
+        self._progress_lock = threading.Lock()
+        self._pipeline_progress: dict = {"running": False}
+        self._cancel_event = threading.Event()
 
     def run_pipeline(self, force: bool = False) -> None:
         logger.info("Starting pipeline run (force=%s)", force)
         item_count = 0
+        self._cancel_event.clear()
+        with self._progress_lock:
+            self._pipeline_progress = {
+                "running": True,
+                "items_done": 0,
+                "items_total": None,
+                "current_item": "",
+                "started_at": datetime.now(),
+            }
         try:
             scraper = RatsinfoScraper(self.config)
             llm_client = OpenRouterClient(self.config)
             formatter = MatrixFormatter()
 
             relevance_threshold = self.config.get("bot", {}).get("relevance_threshold", 1)
-            items_with_results = []
+            source_url = self.config.get("scraper", {}).get("ratsinfo_url", "")
+
+            total = scraper.count_upcoming_items()
+            with self._progress_lock:
+                self._pipeline_progress["items_total"] = total
 
             # Process retry queue first
             for item in self._retry_queue.get_pending():
@@ -56,46 +72,51 @@ class BotScheduler:
                     logger.debug("Retry item skipped by relevance threshold: %s", item.title)
                     scraper.tracker.mark_processed(item.id)
                     continue
-                items_with_results.append((item, result))
+                chunks = formatter.format_single_item_report(item, result, source_url)
+                if self._bot is not None:
+                    self._bot.send_chunks(chunks)
+                item_count += 1
                 scraper.tracker.mark_processed(item.id)
 
             for item in scraper.fetch_new_items(force=force):
+                if self._cancel_event.is_set():
+                    logger.info("Pipeline cancelled by user")
+                    break
+                self._item_store.store(item)
+                with self._progress_lock:
+                    self._pipeline_progress["current_item"] = item.title
                 logger.info("Analyzing item: %s", item.title)
                 cached = self._llm_cache.get(item.id)
                 if cached is not None:
                     logger.info("LLM cache hit for item: %s", item.id)
-                    result = LLMResult(**cached)
+                    try:
+                        result = LLMResult(**cached)
+                    except Exception as cache_exc:
+                        logger.warning("Corrupt cache entry for %s, re-analyzing: %s", item.id, cache_exc)
+                        cached = None
+                        result = llm_client.analyze_item(item)
+                        self._llm_cache.put(item.id, result)
                 else:
                     result = llm_client.analyze_item(item)
                     self._llm_cache.put(item.id, result)
                 if result is None:
                     logger.warning("LLM analysis failed, adding to retry queue: %s", item.id)
                     self._retry_queue.add(item)
-                    continue
-                if result.relevance_score < relevance_threshold:
-                    logger.debug("Item skipped by relevance threshold (%d < %d): %s",
-                                 result.relevance_score, relevance_threshold, item.title)
+                else:
+                    if result.relevance_score < relevance_threshold:
+                        logger.debug("Item skipped by relevance threshold (%d < %d): %s",
+                                     result.relevance_score, relevance_threshold, item.title)
+                    else:
+                        chunks = formatter.format_single_item_report(item, result, source_url)
+                        if self._bot is not None:
+                            self._bot.send_chunks(chunks)
+                        item_count += 1
                     scraper.tracker.mark_processed(item.id)
-                    continue
-                items_with_results.append((item, result))
-                scraper.tracker.mark_processed(item.id)
+                with self._progress_lock:
+                    self._pipeline_progress["items_done"] += 1
 
-            if not items_with_results:
+            if item_count == 0:
                 logger.info("No new items found")
-                self._update_last_run()
-                self._history.record_run(0, True)
-                return
-
-            item_count = len(items_with_results)
-            now = datetime.now()
-            kw = now.isocalendar()[1]
-            year = now.year
-            source_url = self.config.get("scraper", {}).get("ratsinfo_url", "")
-
-            chunks = formatter.format_weekly_report(items_with_results, kw, year, source_url)
-            self._last_report_chunks = chunks
-            if self._bot is not None:
-                self._bot.send_chunks(chunks)
 
             self._update_last_run()
             self._history.record_run(item_count, True)
@@ -111,40 +132,39 @@ class BotScheduler:
                     )
                 except Exception as send_exc:
                     logger.error("Could not send error message: %s", send_exc)
+        finally:
+            with self._progress_lock:
+                self._pipeline_progress["running"] = False
+                self._pipeline_progress["current_item"] = ""
+
+    def cancel_pipeline(self) -> None:
+        self._cancel_event.set()
+
+    def get_pipeline_progress(self) -> dict:
+        with self._progress_lock:
+            return dict(self._pipeline_progress)
 
     def _update_last_run(self) -> None:
         LAST_RUN_FILE.write_text(datetime.now().isoformat())
 
     def _should_run_on_startup(self) -> bool:
-        interval_hours = self.config.get("bot", {}).get("interval_hours", 168)
+        interval_minutes = self.config.get("bot", {}).get("interval_minutes", 360)
         if not LAST_RUN_FILE.exists():
             return True
         try:
             last_run_str = LAST_RUN_FILE.read_text().strip()
             last_run = datetime.fromisoformat(last_run_str)
-            return datetime.now() - last_run > timedelta(hours=interval_hours)
+            return datetime.now() - last_run > timedelta(minutes=interval_minutes)
         except Exception:
             return True
 
     def _setup_schedule(self) -> None:
-        day = self.config.get("bot", {}).get("schedule_day", "monday")
-        time_str = self.config.get("bot", {}).get("schedule_time", "08:00")
-        if day == "daily":
-            schedule.every().day.at(time_str).do(self.run_pipeline)
-            logger.info("Scheduled: daily at %s", time_str)
-        else:
-            try:
-                getattr(schedule.every(), day).at(time_str).do(self.run_pipeline)
-                logger.info("Scheduled: every %s at %s", day, time_str)
-            except AttributeError:
-                logger.warning("Invalid schedule_day '%s', falling back to monday", day)
-                schedule.every().monday.at(time_str).do(self.run_pipeline)
+        interval_minutes = self.config.get("bot", {}).get("interval_minutes", 360)
+        schedule.every(interval_minutes).minutes.do(self.run_pipeline)
+        logger.info("Scheduled: every %d minutes", interval_minutes)
 
     def get_next_run_time(self) -> Optional[datetime]:
         return schedule.next_run()
-
-    def get_last_report_chunks(self) -> List[str]:
-        return self._last_report_chunks
 
     def start(self, run_now: bool = False) -> None:
         logger.info("Scheduler starting")

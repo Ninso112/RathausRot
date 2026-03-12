@@ -29,9 +29,7 @@ DEFAULT_CONFIG = {
         "keywords": [],
     },
     "bot": {
-        "interval_hours": 168,
-        "schedule_day": "monday",
-        "schedule_time": "08:00",
+        "interval_minutes": 360,
         "party": "Die Linke",
         "log_level": "INFO",
         "log_file": "rathausrot.log",
