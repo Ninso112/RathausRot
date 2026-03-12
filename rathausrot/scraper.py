@@ -16,6 +16,12 @@ from rathausrot.utils import RATSINFO_USER_AGENT, rate_limit_sleep, truncate_tex
 
 logger = logging.getLogger(__name__)
 
+_ALLOWED_SCHEMES = {"http", "https"}
+
+
+def _is_safe_url(url: str) -> bool:
+    return urlparse(url).scheme in _ALLOWED_SCHEMES
+
 
 @dataclass
 class CouncilItem:
@@ -95,6 +101,48 @@ class RunHistoryTracker:
         ]
 
 
+class RetryQueue:
+    def __init__(self, db_path: str = "processed_items.db"):
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS retry_queue "
+                "(item_id TEXT PRIMARY KEY, item_json TEXT, "
+                "added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
+                "attempts INTEGER DEFAULT 0)"
+            )
+            conn.commit()
+
+    def add(self, item: "CouncilItem") -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO retry_queue (item_id, item_json, attempts) "
+                "VALUES (?, ?, COALESCE((SELECT attempts FROM retry_queue WHERE item_id = ?), 0) + 1)",
+                (item.id, json.dumps(asdict(item)), item.id),
+            )
+            conn.commit()
+
+    def get_pending(self, max_attempts: int = 3) -> list:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT item_json FROM retry_queue WHERE attempts < ? ORDER BY added_at",
+                (max_attempts,),
+            ).fetchall()
+        items = []
+        for row in rows:
+            data = json.loads(row[0])
+            items.append(CouncilItem(**data))
+        return items
+
+    def remove(self, item_id: str) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM retry_queue WHERE item_id = ?", (item_id,))
+            conn.commit()
+
+
 class LLMCache:
     def __init__(self, db_path: str = "processed_items.db"):
         self.db_path = db_path
@@ -133,9 +181,17 @@ class RatsinfoScraper:
         self.base_url = config.get("scraper", {}).get("ratsinfo_url", "")
         self.timeout = config.get("scraper", {}).get("request_timeout", 30)
         self.max_pdf_pages = config.get("scraper", {}).get("max_pdf_pages", 10)
+        self.keywords = [kw.lower() for kw in config.get("scraper", {}).get("keywords", [])]
         self.tracker = DuplicateTracker()
         self.session = requests.Session()
         self.session.headers["User-Agent"] = RATSINFO_USER_AGENT
+
+    def _matches_keywords(self, item: "CouncilItem") -> bool:
+        """Return True if item matches configured keywords, or no keywords are set."""
+        if not self.keywords:
+            return True
+        text = f"{item.title} {item.body_text}".lower()
+        return any(kw in text for kw in self.keywords)
 
     def detect_system(self) -> str:
         if not self.base_url:
@@ -164,41 +220,42 @@ class RatsinfoScraper:
         logger.info("Detected system: %s", system)
         try:
             if system == "sessionnet":
-                yield from self._fetch_sessionnet()
+                items = self._fetch_sessionnet()
             elif system == "allris":
-                yield from self._fetch_allris()
+                items = self._fetch_allris()
             else:
-                yield from self._fetch_generic()
+                items = self._fetch_generic()
+            for item in items:
+                if self._matches_keywords(item):
+                    yield item
+                else:
+                    logger.debug("Item skipped by keyword filter: %s", item.title)
         except Exception as exc:
             logger.error("fetch_new_items failed: %s", exc)
 
-    def _fetch_sessionnet(self) -> Iterator[CouncilItem]:
+    def _fetch_and_parse(self, selectors: list, source_system: str) -> Iterator[CouncilItem]:
         soup = self._fetch_page(self.base_url)
         if soup is None:
             return
-        selectors = [".ko-list li", ".to-list li", ".vorl-list li"]
         for selector in selectors:
-            for li in soup.select(selector):
+            for element in soup.select(selector):
                 try:
-                    item = self._parse_list_item(li, "sessionnet")
+                    item = self._parse_list_item(element, source_system)
                     if item and self.tracker.is_new(item.id):
                         rate_limit_sleep()
                         yield item
                 except Exception as exc:
-                    logger.warning("Error parsing sessionnet item: %s", exc)
+                    logger.warning("Error parsing %s item: %s", source_system, exc)
+
+    def _fetch_sessionnet(self) -> Iterator[CouncilItem]:
+        yield from self._fetch_and_parse(
+            [".ko-list li", ".to-list li", ".vorl-list li"], "sessionnet"
+        )
 
     def _fetch_allris(self) -> Iterator[CouncilItem]:
-        soup = self._fetch_page(self.base_url)
-        if soup is None:
-            return
-        for row in soup.select("#risinh tr, .title"):
-            try:
-                item = self._parse_list_item(row, "allris")
-                if item and self.tracker.is_new(item.id):
-                    rate_limit_sleep()
-                    yield item
-            except Exception as exc:
-                logger.warning("Error parsing allris item: %s", exc)
+        yield from self._fetch_and_parse(
+            ["#risinh tr", ".title"], "allris"
+        )
 
     def _fetch_generic(self) -> Iterator[CouncilItem]:
         soup = self._fetch_page(self.base_url)
@@ -210,6 +267,8 @@ class RatsinfoScraper:
                 if not any(kw in href.lower() for kw in ["vorl", "antrag", "beschluss", "tagesord"]):
                     continue
                 url = urljoin(self.base_url, href)
+                if not _is_safe_url(url):
+                    continue
                 title = a.get_text(strip=True)
                 if not title:
                     continue
@@ -241,6 +300,9 @@ class RatsinfoScraper:
             return None
         href = a_tag["href"]
         url = urljoin(self.base_url, href) if not href.startswith("http") else href
+        if not _is_safe_url(url):
+            logger.warning("Skipping unsafe URL scheme: %s", url)
+            return None
         item_id = self._build_item_id(url, title)
         date_tag = element.find(class_=["date", "datum"])
         date_str = date_tag.get_text(strip=True) if date_tag else ""

@@ -6,9 +6,14 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+_scheduler_ref = None
+
+
 def _make_signal_handler(config_manager):
     def _handler(signum, frame):
         print("\nShutting down RathausRot...")
+        if _scheduler_ref is not None:
+            _scheduler_ref.stop()
         try:
             from rathausrot.matrix_bot import MatrixBot
             bot = MatrixBot(config_manager.load())
@@ -78,5 +83,7 @@ def main():
     except Exception as exc:
         logger.warning("Could not send startup message: %s", exc)
 
+    global _scheduler_ref
     scheduler = BotScheduler(config_manager)
+    _scheduler_ref = scheduler
     scheduler.start(run_now=args.run_now)

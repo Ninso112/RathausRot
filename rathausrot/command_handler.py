@@ -1,3 +1,4 @@
+import html
 import logging
 import threading
 from datetime import datetime
@@ -13,7 +14,10 @@ HELP_TEXT = (
     "<li><code>!verlauf</code> – Letzte Scrape-Läufe anzeigen</li>"
     "<li><code>!nächste</code> – Nächsten geplanten Lauf anzeigen</li>"
     "<li><code>!zusammenfassung</code> – Letzten Bericht erneut senden</li>"
+    "<li><code>!statistik</code> – Scrape-Statistiken anzeigen</li>"
     "<li><code>!stat</code> – Systemauslastung (CPU, RAM, Disk, Uptime)</li>"
+    "<li><code>!log [level] [anzahl]</code> – Bot-Logs anzeigen</li>"
+    "<li><code>!export</code> – Letzten Bericht als Datei exportieren</li>"
     "<li><code>!version</code> – Version anzeigen</li>"
     "<li><code>!hilfe</code> – Diese Hilfe anzeigen</li>"
     "</ul>"
@@ -40,6 +44,9 @@ class CommandHandler:
             "!nachste": self._cmd_naechste,
             "!zusammenfassung": self._cmd_zusammenfassung,
             "!stat": self._cmd_stat,
+            "!statistik": self._cmd_statistik,
+            "!log": self._cmd_log,
+            "!export": self._cmd_export,
             "!version": self._cmd_version,
         }
 
@@ -62,13 +69,13 @@ class CommandHandler:
             return None
         if not self.is_allowed(sender):
             logger.warning("Unauthorized command attempt from %s: %s", sender, cmd)
-            return f"<p>⛔ Keine Berechtigung für <code>{sender}</code>.</p>"
+            return f"<p>⛔ Keine Berechtigung für <code>{html.escape(sender)}</code>.</p>"
         logger.info("Command '%s' from %s", cmd, sender)
         try:
             return self._commands[cmd](sender, body)
         except Exception as exc:
             logger.error("Error executing command '%s': %s", cmd, exc)
-            return f"<p>❌ Fehler beim Ausführen von <code>{cmd}</code>: {exc}</p>"
+            return f"<p>❌ Fehler beim Ausführen von <code>{html.escape(cmd)}</code>: {html.escape(str(exc))}</p>"
 
     # ------------------------------------------------------------------ #
     # Command implementations
@@ -83,15 +90,15 @@ class CommandHandler:
                 return "<p>⏳ Ein Scrape-Vorgang läuft bereits. Bitte warten.</p>"
             self._scrape_running = True
 
-        def run():
-            try:
-                self.scheduler_ref.run_pipeline()
-            finally:
-                with self._scrape_lock:
-                    self._scrape_running = False
+            def run():
+                try:
+                    self.scheduler_ref.run_pipeline()
+                finally:
+                    with self._scrape_lock:
+                        self._scrape_running = False
 
-        thread = threading.Thread(target=run, daemon=True, name="manual-scrape")
-        thread.start()
+            thread = threading.Thread(target=run, daemon=True, name="manual-scrape")
+            thread.start()
         return "<p>🔄 Manueller Scrape gestartet. Ergebnisse folgen in Kürze.</p>"
 
     def _cmd_status(self, sender: str, body: str) -> str:
@@ -141,7 +148,7 @@ class CommandHandler:
             except Exception:
                 pass
             count_str = f", {entry['item_count']} Items" if entry["item_count"] else ""
-            error_str = f" – {entry['error_msg']}" if entry["error_msg"] else ""
+            error_str = f" – {html.escape(entry['error_msg'])}" if entry["error_msg"] else ""
             items_html += f"<li>{icon} {ts}{count_str}{error_str}</li>"
 
         return (
@@ -247,6 +254,84 @@ class CommandHandler:
             f"{temp_str}"
             "</ul>"
         )
+
+    def _cmd_statistik(self, sender: str, body: str) -> str:
+        entries = self.scheduler_ref._history.get_recent(100)
+        if not entries:
+            return "<p>📊 Noch keine Statistiken verfügbar.</p>"
+
+        total_runs = len(entries)
+        success_runs = sum(1 for e in entries if e["success"])
+        total_items = sum(e["item_count"] for e in entries)
+        success_rate = (success_runs / total_runs * 100) if total_runs else 0
+
+        return (
+            "<p><strong>📊 RathausRot – Statistiken</strong></p>"
+            "<ul>"
+            f"<li><strong>Gesamte Läufe:</strong> {total_runs}</li>"
+            f"<li><strong>Erfolgsrate:</strong> {success_rate:.0f}%</li>"
+            f"<li><strong>Items gesamt:</strong> {total_items}</li>"
+            "</ul>"
+        )
+
+    def _cmd_log(self, sender: str, body: str) -> str:
+        from rathausrot.utils import get_memory_handler
+        handler = get_memory_handler()
+        if handler is None:
+            return "<p>Log-Handler nicht verfügbar.</p>"
+
+        args = body.split()[1:]
+        level = None
+        count = 30
+        for arg in args:
+            if arg.upper() in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+                level = arg.upper()
+            elif arg.isdigit():
+                count = min(int(arg), 100)
+
+        entries = handler.get_logs(count=count, level=level)
+        if not entries:
+            return "<p>Keine Log-Einträge gefunden.</p>"
+
+        escaped = html.escape("\n".join(entries))
+        response = f"<p><strong>Logs ({len(entries)} Einträge):</strong></p><pre>{escaped}</pre>"
+
+        # Chunk if too large (>60KB)
+        if len(response.encode("utf-8")) > 60000 and self._send_extra is not None:
+            from rathausrot.utils import chunk_html
+            chunks = chunk_html(response)
+            if len(chunks) > 1:
+                def send():
+                    self._send_extra(chunks[1:])
+                thread = threading.Thread(target=send, daemon=True, name="send-logs")
+                thread.start()
+            return chunks[0]
+
+        return response
+
+    def _cmd_export(self, sender: str, body: str) -> str:
+        chunks = self.scheduler_ref.get_last_report_chunks()
+        if not chunks:
+            return "<p>Kein Bericht vorhanden. Bitte zuerst <code>!scrape</code> ausführen.</p>"
+
+        from rathausrot.utils import strip_html
+        full_report = "\n\n".join(strip_html(chunk) for chunk in chunks)
+
+        if self._send_extra is None:
+            return "<p>Senderfunktion nicht konfiguriert.</p>"
+
+        # Send as a pre-formatted text block
+        escaped = html.escape(full_report)
+        export_html = f"<p><strong>Bericht-Export:</strong></p><pre>{escaped}</pre>"
+
+        def send():
+            from rathausrot.utils import chunk_html
+            export_chunks = chunk_html(export_html)
+            self._send_extra(export_chunks)
+
+        thread = threading.Thread(target=send, daemon=True, name="send-export")
+        thread.start()
+        return "<p>Bericht wird exportiert...</p>"
 
     def _cmd_version(self, sender: str, body: str) -> str:
         from rathausrot import __version__

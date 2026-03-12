@@ -1,3 +1,4 @@
+import html
 import logging
 from typing import List, Optional, Tuple
 
@@ -45,7 +46,7 @@ class MatrixFormatter:
 
     def format_header(self, kw: int, year: int, source_url: str = "") -> str:
         if source_url:
-            source_link = f' – <a href="{source_url}">Ratsinfo</a>'
+            source_link = f' – <a href="{html.escape(source_url, quote=True)}">Ratsinfo</a>'
         else:
             source_link = ""
         return (
@@ -55,20 +56,22 @@ class MatrixFormatter:
         )
 
     def format_item(self, item: CouncilItem, result: Optional[LLMResult]) -> str:
-        title_link = f'<a href="{item.url}">{item.title}</a>'
+        safe_url = html.escape(item.url, quote=True)
+        safe_title = html.escape(item.title)
+        title_link = f'<a href="{safe_url}">{safe_title}</a>'
         parts = [f"<h3>{title_link}</h3>"]
         if item.date:
-            parts.append(f"<p><em>Datum: {item.date}</em></p>")
+            parts.append(f"<p><em>Datum: {html.escape(item.date)}</em></p>")
         if result:
-            parts.append(f"<p>{result.summary}</p>")
+            parts.append(f"<p>{html.escape(result.summary)}</p>")
             if result.key_points:
-                kp_items = "".join(f"<li>{kp}</li>" for kp in result.key_points)
+                kp_items = "".join(f"<li>{html.escape(kp)}</li>" for kp in result.key_points)
                 parts.append(f"<ul>{kp_items}</ul>")
             emoji = VERDICT_EMOJI.get(result.verdict, "🤔")
             stars = STAR_RATINGS.get(max(1, min(5, result.relevance_score)), "★★★☆☆")
             parts.append(
-                f"<p><strong>Einschätzung:</strong> {emoji} {result.verdict}<br>"
-                f"<em>{result.verdict_reason}</em></p>"
+                f"<p><strong>Einschätzung:</strong> {emoji} {html.escape(result.verdict)}<br>"
+                f"<em>{html.escape(result.verdict_reason)}</em></p>"
             )
             parts.append(f"<p><strong>Relevanz:</strong> {stars}</p>")
         else:

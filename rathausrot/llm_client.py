@@ -44,6 +44,7 @@ class OpenRouterClient:
         self.model = config.get("openrouter", {}).get("model", "anthropic/claude-sonnet-4")
         self.max_tokens = config.get("openrouter", {}).get("max_tokens", 1024)
         self.party = config.get("bot", {}).get("party", "")
+        self.custom_system_prompt = config.get("openrouter", {}).get("system_prompt", "")
 
     def analyze_item(self, item: CouncilItem) -> Optional[LLMResult]:
         try:
@@ -53,17 +54,23 @@ class OpenRouterClient:
                 return None
             result = self._parse_response(raw)
             return result
-        except Exception as exc:
+        except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError, ValueError) as exc:
             logger.error("analyze_item failed for %s: %s", item.id, exc)
+            return None
+        except Exception as exc:
+            logger.error("analyze_item unexpected error for %s: %s", item.id, exc, exc_info=True)
             return None
 
     def _build_prompt(self, item: CouncilItem) -> Tuple[str, str]:
-        system = (
-            f"Du bist ein Assistent für kommunalpolitische Analyse, der die Fraktion {self.party} "
-            f"bei der Vorbereitung von Ratssitzungen unterstützt. "
-            f"Antworte ausschließlich mit validem JSON gemäß dem angegebenen Schema.\n\n"
-            f"{SYSTEM_PROMPT_DISCLAIMER}"
-        )
+        if self.custom_system_prompt:
+            system = self.custom_system_prompt
+        else:
+            system = (
+                f"Du bist ein Assistent für kommunalpolitische Analyse, der die Fraktion {self.party} "
+                f"bei der Vorbereitung von Ratssitzungen unterstützt. "
+                f"Antworte ausschließlich mit validem JSON gemäß dem angegebenen Schema.\n\n"
+                f"{SYSTEM_PROMPT_DISCLAIMER}"
+            )
         body = truncate_text(item.body_text, 12000)
         pdf_summary = ""
         if item.pdf_texts:
@@ -104,7 +111,13 @@ class OpenRouterClient:
                 data = resp.json()
                 tokens = data.get("usage", {}).get("total_tokens", 0)
                 logger.info("LLM tokens used: %d (attempt %d)", tokens, attempt)
-                content = data["choices"][0]["message"]["content"]
+                try:
+                    content = data["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError) as exc:
+                    logger.warning("Unexpected LLM response structure (attempt %d): %s", attempt, exc)
+                    if attempt < len(delays):
+                        time.sleep(delay)
+                    continue
                 return content
             except requests.exceptions.RequestException as exc:
                 logger.warning("LLM request attempt %d failed: %s", attempt, exc)
@@ -119,22 +132,39 @@ class OpenRouterClient:
             return self._dict_to_result(data)
         except json.JSONDecodeError:
             pass
-        # Fallback: extract JSON block with regex
-        match = re.search(r'\{.*\}', text, re.DOTALL)
-        if match:
+        # Try ```json ... ``` code block
+        code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        if code_match:
             try:
-                data = json.loads(match.group())
-                return self._dict_to_result(data)
+                return self._dict_to_result(json.loads(code_match.group(1)))
             except json.JSONDecodeError:
                 pass
+        # Fallback: balanced brace extraction
+        start = text.find('{')
+        if start != -1:
+            depth = 0
+            for i, ch in enumerate(text[start:], start):
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                if depth == 0:
+                    try:
+                        return self._dict_to_result(json.loads(text[start:i + 1]))
+                    except json.JSONDecodeError:
+                        break
         logger.warning("Could not parse LLM response as JSON, using defaults")
         return LLMResult(summary=truncate_text(text, 500))
 
     def _dict_to_result(self, data: dict) -> LLMResult:
+        try:
+            score = int(data.get("relevance_score", 3))
+        except (ValueError, TypeError):
+            score = 3
         return LLMResult(
             summary=data.get("summary", ""),
             key_points=data.get("key_points", []),
             verdict=data.get("verdict", "Enthaltung"),
             verdict_reason=data.get("verdict_reason", ""),
-            relevance_score=int(data.get("relevance_score", 3)),
+            relevance_score=max(1, min(5, score)),
         )

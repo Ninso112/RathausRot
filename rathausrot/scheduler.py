@@ -1,4 +1,6 @@
+import html
 import logging
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -7,11 +9,12 @@ import schedule
 import time
 
 from rathausrot.config_manager import ConfigManager
-from rathausrot.scraper import RatsinfoScraper, RunHistoryTracker, LLMCache
+from rathausrot.scraper import RatsinfoScraper, RunHistoryTracker, LLMCache, RetryQueue
 from rathausrot.llm_client import OpenRouterClient, LLMResult
 from rathausrot.formatter import MatrixFormatter
 from rathausrot.matrix_bot import MatrixBot
 from rathausrot.command_handler import CommandHandler
+from rathausrot.healthcheck import start_healthcheck
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +28,9 @@ class BotScheduler:
         self._bot: Optional[MatrixBot] = None
         self._history = RunHistoryTracker()
         self._llm_cache = LLMCache()
+        self._retry_queue = RetryQueue()
         self._last_report_chunks: List[str] = []
+        self._stop_event = threading.Event()
 
     def run_pipeline(self) -> None:
         logger.info("Starting pipeline run")
@@ -35,7 +40,25 @@ class BotScheduler:
             llm_client = OpenRouterClient(self.config)
             formatter = MatrixFormatter()
 
+            relevance_threshold = self.config.get("bot", {}).get("relevance_threshold", 1)
             items_with_results = []
+
+            # Process retry queue first
+            for item in self._retry_queue.get_pending():
+                logger.info("Retrying item from queue: %s", item.title)
+                result = llm_client.analyze_item(item)
+                if result is None:
+                    logger.warning("Retry failed for item: %s", item.id)
+                    continue
+                self._retry_queue.remove(item.id)
+                self._llm_cache.put(item.id, result)
+                if result.relevance_score < relevance_threshold:
+                    logger.debug("Retry item skipped by relevance threshold: %s", item.title)
+                    scraper.tracker.mark_processed(item.id)
+                    continue
+                items_with_results.append((item, result))
+                scraper.tracker.mark_processed(item.id)
+
             for item in scraper.fetch_new_items():
                 logger.info("Analyzing item: %s", item.title)
                 cached = self._llm_cache.get(item.id)
@@ -45,6 +68,15 @@ class BotScheduler:
                 else:
                     result = llm_client.analyze_item(item)
                     self._llm_cache.put(item.id, result)
+                if result is None:
+                    logger.warning("LLM analysis failed, adding to retry queue: %s", item.id)
+                    self._retry_queue.add(item)
+                    continue
+                if result.relevance_score < relevance_threshold:
+                    logger.debug("Item skipped by relevance threshold (%d < %d): %s",
+                                 result.relevance_score, relevance_threshold, item.title)
+                    scraper.tracker.mark_processed(item.id)
+                    continue
                 items_with_results.append((item, result))
                 scraper.tracker.mark_processed(item.id)
 
@@ -75,7 +107,7 @@ class BotScheduler:
                 try:
                     self._bot.send_message(
                         f"<p>❌ <strong>Pipeline-Fehler</strong></p>"
-                        f"<p><code>{exc}</code></p>"
+                        f"<p><code>{html.escape(str(exc))}</code></p>"
                     )
                 except Exception as send_exc:
                     logger.error("Could not send error message: %s", send_exc)
@@ -97,12 +129,16 @@ class BotScheduler:
     def _setup_schedule(self) -> None:
         day = self.config.get("bot", {}).get("schedule_day", "monday")
         time_str = self.config.get("bot", {}).get("schedule_time", "08:00")
-        try:
-            getattr(schedule.every(), day).at(time_str).do(self.run_pipeline)
-            logger.info("Scheduled: every %s at %s", day, time_str)
-        except AttributeError:
-            logger.warning("Invalid schedule_day '%s', falling back to monday", day)
-            schedule.every().monday.at(time_str).do(self.run_pipeline)
+        if day == "daily":
+            schedule.every().day.at(time_str).do(self.run_pipeline)
+            logger.info("Scheduled: daily at %s", time_str)
+        else:
+            try:
+                getattr(schedule.every(), day).at(time_str).do(self.run_pipeline)
+                logger.info("Scheduled: every %s at %s", day, time_str)
+            except AttributeError:
+                logger.warning("Invalid schedule_day '%s', falling back to monday", day)
+                schedule.every().monday.at(time_str).do(self.run_pipeline)
 
     def get_next_run_time(self) -> Optional[datetime]:
         return schedule.next_run()
@@ -112,6 +148,9 @@ class BotScheduler:
 
     def start(self, run_now: bool = False) -> None:
         logger.info("Scheduler starting")
+
+        healthcheck_port = self.config.get("bot", {}).get("healthcheck_port", 0)
+        start_healthcheck(healthcheck_port, scheduler_ref=self)
 
         self._bot = MatrixBot(self.config)
         command_handler = CommandHandler(self.config, self, send_extra=self._bot.send_chunks)
@@ -123,6 +162,10 @@ class BotScheduler:
 
         self._setup_schedule()
 
-        while True:
+        while not self._stop_event.is_set():
             schedule.run_pending()
-            time.sleep(60)
+            self._stop_event.wait(timeout=10)
+
+    def stop(self) -> None:
+        """Signal the scheduler loop to exit."""
+        self._stop_event.set()

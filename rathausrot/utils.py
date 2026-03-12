@@ -1,12 +1,37 @@
 import logging
 import time
 import re
+from collections import deque
 from html.parser import HTMLParser
+from logging.handlers import RotatingFileHandler
+from typing import Optional
 
 RATSINFO_USER_AGENT = "RathausRot/1.0 (Kommunalpolitik-Bot; +https://github.com/dein-user/rathausrot)"
 
 
-def setup_logging(log_file: str = "rathausrot.log", level: str = "INFO") -> None:
+class MemoryLogHandler(logging.Handler):
+    """Ring-buffer handler that keeps the last max_entries log entries in RAM."""
+
+    def __init__(self, max_entries: int = 500):
+        super().__init__()
+        self._buffer: deque = deque(maxlen=max_entries)
+
+    def emit(self, record):
+        self._buffer.append(self.format(record))
+
+    def get_logs(self, count: int = 50, level: Optional[str] = None) -> list:
+        """Return the last `count` entries, optionally filtered by level."""
+        entries = list(self._buffer)
+        if level:
+            entries = [e for e in entries if f"[{level.upper()}]" in e]
+        return entries[-count:]
+
+
+_memory_handler: Optional[MemoryLogHandler] = None
+
+
+def setup_logging(log_file: str = "rathausrot.log", level: str = "INFO") -> MemoryLogHandler:
+    global _memory_handler
     numeric_level = getattr(logging, level.upper(), logging.INFO)
     formatter = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -17,7 +42,7 @@ def setup_logging(log_file: str = "rathausrot.log", level: str = "INFO") -> None
     if root.handlers:
         root.handlers.clear()
 
-    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
     fh.setFormatter(formatter)
     root.addHandler(fh)
 
@@ -25,9 +50,19 @@ def setup_logging(log_file: str = "rathausrot.log", level: str = "INFO") -> None
     sh.setFormatter(formatter)
     root.addHandler(sh)
 
+    _memory_handler = MemoryLogHandler(max_entries=500)
+    _memory_handler.setFormatter(formatter)
+    root.addHandler(_memory_handler)
+
+    return _memory_handler
+
+
+def get_memory_handler() -> Optional[MemoryLogHandler]:
+    return _memory_handler
+
 
 def chunk_html(html: str, max_bytes: int = 60000) -> list:
-    """Split HTML into chunks at </p> or </li> boundaries, each ≤ max_bytes."""
+    """Split HTML into chunks at </p> or </li> boundaries, each <= max_bytes."""
     chunks = []
     current = ""
     # Split at closing block tags but keep the delimiter

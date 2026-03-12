@@ -71,6 +71,41 @@ def test_footer_in_every_chunk():
         assert "automatisch generierte Prognosen" in chunk
 
 
+def test_format_item_xss_in_title():
+    formatter = MatrixFormatter()
+    item = make_item(title='<script>alert("xss")</script>', url="https://example.com/safe")
+    result = make_result()
+    html = formatter.format_item(item, result)
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_format_item_xss_in_url():
+    formatter = MatrixFormatter()
+    item = make_item(title="Safe Title", url='https://example.com/"><script>alert(1)</script>')
+    result = make_result()
+    html = formatter.format_item(item, result)
+    assert "<script>" not in html
+
+
+def test_format_item_xss_in_llm_output():
+    formatter = MatrixFormatter()
+    item = make_item()
+    result = LLMResult(
+        summary='<img src=x onerror=alert(1)>',
+        key_points=['<script>xss</script>'],
+        verdict='<b>Zustimmung</b>',
+        verdict_reason='<a href="javascript:alert(1)">click</a>',
+        relevance_score=3,
+    )
+    html = formatter.format_item(item, result)
+    # Ensure raw tags are escaped (not rendered as HTML)
+    assert "<img src=" not in html
+    assert "&lt;img" in html
+    assert "<script>xss</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
 def test_format_item_absolute_url():
     formatter = MatrixFormatter()
     item = make_item(url="https://ratsinfo.example.de/bi/vo020.asp?VOLFDNR=1234")

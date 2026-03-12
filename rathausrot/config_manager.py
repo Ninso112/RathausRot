@@ -20,11 +20,13 @@ DEFAULT_CONFIG = {
         "api_key": "",
         "model": "anthropic/claude-sonnet-4",
         "max_tokens": 1024,
+        "system_prompt": "",
     },
     "scraper": {
         "ratsinfo_url": "",
         "max_pdf_pages": 10,
         "request_timeout": 30,
+        "keywords": [],
     },
     "bot": {
         "interval_hours": 168,
@@ -34,6 +36,8 @@ DEFAULT_CONFIG = {
         "log_level": "INFO",
         "log_file": "rathausrot.log",
         "allowed_users": [],
+        "relevance_threshold": 1,
+        "healthcheck_port": 0,
     },
 }
 
@@ -83,9 +87,15 @@ class ConfigManager:
 
     def is_configured(self) -> bool:
         config = self.load()
-        token = config.get("matrix", {}).get("access_token", "")
+        matrix = config.get("matrix", {})
+        token = matrix.get("access_token", "")
+        homeserver = matrix.get("homeserver", "")
+        room_id = matrix.get("room_id", "")
+        room_ids = matrix.get("room_ids", [])
         api_key = config.get("openrouter", {}).get("api_key", "")
-        return bool(token and api_key)
+        ratsinfo_url = config.get("scraper", {}).get("ratsinfo_url", "")
+        has_room = bool(room_id or room_ids)
+        return bool(token and api_key and homeserver and has_room and ratsinfo_url)
 
     def get(self, *keys: str, default: Any = None) -> Any:
         config = self.load()
