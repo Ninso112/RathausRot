@@ -27,13 +27,12 @@ class MatrixBot:
         self._room_ids_set = set(self.room_ids)
         self._client = None
 
-    def _get_client(self):
-        if self._client is None:
-            import nio
-            self._client = nio.AsyncClient(self.homeserver, self.username)
-            self._client.access_token = self.access_token
-            self._client.user_id = self.username
-        return self._client
+    def _new_client(self):
+        import nio
+        client = nio.AsyncClient(self.homeserver, self.username)
+        client.access_token = self.access_token
+        client.user_id = self.username
+        return client
 
     @staticmethod
     def login_with_password(homeserver: str, username: str, password: str) -> str:
@@ -54,23 +53,26 @@ class MatrixBot:
 
         async def _send_all():
             import nio
-            client = self._get_client()
-            content = {
-                "msgtype": "m.text",
-                "body": plain,
-                "format": "org.matrix.custom.html",
-                "formatted_body": html_content,
-            }
-            for room_id in self.room_ids:
-                resp = await client.room_send(
-                    room_id=room_id,
-                    message_type="m.room.message",
-                    content=content,
-                )
-                if isinstance(resp, nio.RoomSendError):
-                    logger.error("Failed to send message to %s: %s", room_id, resp)
-                else:
-                    logger.info("Message sent to %s", room_id)
+            client = self._new_client()
+            try:
+                content = {
+                    "msgtype": "m.text",
+                    "body": plain,
+                    "format": "org.matrix.custom.html",
+                    "formatted_body": html_content,
+                }
+                for room_id in self.room_ids:
+                    resp = await client.room_send(
+                        room_id=room_id,
+                        message_type="m.room.message",
+                        content=content,
+                    )
+                    if isinstance(resp, nio.RoomSendError):
+                        logger.error("Failed to send message to %s: %s", room_id, resp)
+                    else:
+                        logger.info("Message sent to %s", room_id)
+            finally:
+                await client.close()
 
         asyncio.run(_send_all())
 
@@ -95,14 +97,7 @@ class MatrixBot:
         )
 
     def close(self) -> None:
-        if self._client is not None:
-            async def _close():
-                await self._client.close()
-            try:
-                asyncio.run(_close())
-            except Exception as exc:
-                logger.warning("Error closing Matrix client: %s", exc)
-            self._client = None
+        pass  # send_message now creates a fresh client per call; nothing to close
 
     def run_sync(self, coro):
         return asyncio.run(coro)
@@ -121,39 +116,46 @@ class MatrixBot:
         client.access_token = self.access_token
         client.user_id = self.username
 
-        async def _on_message(room, event):
-            if not isinstance(event, nio.RoomMessageText):
-                return
-            if room.room_id not in self._room_ids_set:
-                return
-            response_html = command_handler.handle(event.sender, event.body)
-            if response_html is None:
-                return
-            plain = strip_html(response_html)
-            send_resp = await client.room_send(
-                room_id=room.room_id,
-                message_type="m.room.message",
-                content={
-                    "msgtype": "m.text",
-                    "body": plain,
-                    "format": "org.matrix.custom.html",
-                    "formatted_body": response_html,
-                },
-            )
-            if isinstance(send_resp, nio.RoomSendError):
-                logger.error("Failed to send command response: %s", send_resp)
-
-        client.add_event_callback(_on_message, nio.RoomMessageText)
+        import time as _time
+        startup_ts_ms = int(_time.time() * 1000)
 
         try:
-            # Initial sync to get the current `since` token so we do NOT
-            # replay messages that arrived before the bot started.
+            # Initial sync BEFORE registering the callback so that timeline
+            # events returned by this sync do not trigger command execution.
             logger.info("Command listener: performing initial sync...")
             init_resp = await client.sync(timeout=0, full_state=True)
             if isinstance(init_resp, nio.SyncError):
                 logger.error("Initial sync failed, aborting listener: %s", init_resp)
                 return
             client.next_batch = init_resp.next_batch
+
+            async def _on_message(room, event):
+                if not isinstance(event, nio.RoomMessageText):
+                    return
+                if room.room_id not in self._room_ids_set:
+                    return
+                # Ignore events that were sent before this bot instance started
+                if event.server_timestamp < startup_ts_ms:
+                    logger.debug("Ignoring pre-startup event from %s", event.sender)
+                    return
+                response_html = command_handler.handle(event.sender, event.body)
+                if response_html is None:
+                    return
+                plain = strip_html(response_html)
+                send_resp = await client.room_send(
+                    room_id=room.room_id,
+                    message_type="m.room.message",
+                    content={
+                        "msgtype": "m.text",
+                        "body": plain,
+                        "format": "org.matrix.custom.html",
+                        "formatted_body": response_html,
+                    },
+                )
+                if isinstance(send_resp, nio.RoomSendError):
+                    logger.error("Failed to send command response: %s", send_resp)
+
+            client.add_event_callback(_on_message, nio.RoomMessageText)
             logger.info("Command listener ready – listening for commands")
             await client.sync_forever(timeout=30000, full_state=False)
         except asyncio.CancelledError:

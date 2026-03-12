@@ -90,6 +90,8 @@ class CommandHandler:
         with self._scrape_lock:
             if self._scrape_running:
                 return "<p>⏳ Ein Scrape-Vorgang läuft bereits. Bitte warten.</p>"
+            if self.scheduler_ref.get_pipeline_progress().get("running", False):
+                return "<p>⏳ Der automatische Scrape läuft gerade. Bitte warten.</p>"
             self._scrape_running = True
 
             def run():

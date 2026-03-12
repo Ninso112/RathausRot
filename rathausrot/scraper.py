@@ -9,7 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Iterator, List, Optional
 from urllib.robotparser import RobotFileParser
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
@@ -361,6 +361,14 @@ class RatsinfoScraper:
             ["#risinh tr", ".title"], "allris", force=force
         )
 
+    @staticmethod
+    def _sternberg_canonical_id(url: str) -> str:
+        """Extract the __= parameter from a Sternberg URL as canonical item identifier."""
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        dunder = params.get("__", [None])[0]
+        return dunder if dunder else url
+
     def _fetch_sternberg(self, force: bool = False) -> Iterator[CouncilItem]:
         vorlagen_url = urljoin(self.base_url, "/vorlagen")
         soup = self._fetch_page(vorlagen_url)
@@ -372,12 +380,18 @@ class RatsinfoScraper:
             rows = soup.find_all("a", href=lambda h: h and "/vorgang/?__=" in h)
         else:
             rows = table.find_all("a", href=lambda h: h and "/vorgang/?__=" in h)
+        seen_canonical: set = set()
         for a_tag in rows:
             try:
                 href = a_tag["href"]
                 url = urljoin(self.base_url, href)
                 if not _is_safe_url(url):
                     continue
+                canonical = self._sternberg_canonical_id(url)
+                if canonical in seen_canonical:
+                    logger.debug("Sternberg duplicate skipped (same __= id): %s", url)
+                    continue
+                seen_canonical.add(canonical)
                 title = a_tag.get_text(strip=True)
                 if not title:
                     continue
