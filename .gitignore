@@ -34,6 +34,9 @@ ENV/
 htmlcov/
 *.coveragerc
 
+# Claude Code
+.claude/
+
 # IDEs & Editoren
 .vscode/
 .idea/

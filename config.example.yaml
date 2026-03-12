@@ -32,11 +32,8 @@ scraper:
   respect_robots_txt: true
 
 bot:
-  # Intervall in Stunden (168 = 1 Woche)
-  interval_hours: 168
-  # Wochentag für den Bericht ("monday", "tuesday", ..., "daily" für täglich)
-  schedule_day: "monday"
-  schedule_time: "08:00"
+  # Abruf-Intervall in Minuten (360 = alle 6 Stunden)
+  interval_minutes: 360
   # Deine Partei (für den Analyse-Kontext)
   party: "SPD"
   log_level: "INFO"
@@ -46,7 +43,5 @@ bot:
   # Health-Check HTTP-Port (0 = deaktiviert)
   healthcheck_port: 0
   # Matrix-Benutzer, die Chat-Befehle ausführen dürfen (z.B. !scrape).
-  # Leer lassen, um alle Mitglieder des Raums zuzulassen.
-  allowed_users:
-    - "@admin:matrix.org"
-    - "@fraktionsmitglied:matrix.org"
+  # Leer lassen (leere Liste), um alle Mitglieder des Raums zuzulassen.
+  allowed_users: []
