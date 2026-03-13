@@ -17,6 +17,9 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     _start_time: float = time.time()
 
     def do_GET(self):
+        if self.path == "/calendar.ics":
+            self._serve_calendar()
+            return
         if self.path != "/health":
             self.send_response(404)
             self.end_headers()
@@ -77,6 +80,23 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(body.encode("utf-8"))
+
+    def _serve_calendar(self):
+        try:
+            from rathausrot.scraper import CouncilItemStore
+            from rathausrot.calendar_generator import generate_ics
+            items = CouncilItemStore().get_all_as_items(limit=500)
+            ics_data = generate_ics(items)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/calendar; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="rathausrot.ics"')
+            self.end_headers()
+            self.wfile.write(ics_data)
+        except Exception as exc:
+            logger.error("Calendar endpoint error: %s", exc)
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(str(exc).encode("utf-8"))
 
     def log_message(self, format, *args):
         # Suppress default stderr logging

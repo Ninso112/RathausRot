@@ -50,8 +50,9 @@ class MatrixBot:
 
         return asyncio.run(_login())
 
-    def send_message(self, html_content: str) -> None:
+    def send_message(self, html_content: str, room_ids: Optional[List[str]] = None) -> None:
         plain = strip_html(html_content)
+        target_rooms = room_ids if room_ids is not None else self.room_ids
 
         async def _send_all():
             import nio
@@ -63,7 +64,7 @@ class MatrixBot:
                     "format": "org.matrix.custom.html",
                     "formatted_body": html_content,
                 }
-                for room_id in self.room_ids:
+                for room_id in target_rooms:
                     resp = await client.room_send(
                         room_id=room_id,
                         message_type="m.room.message",
@@ -78,12 +79,52 @@ class MatrixBot:
 
         asyncio.run(_send_all())
 
-    def send_chunks(self, chunks: List[str]) -> None:
+    def send_chunks(self, chunks: List[str], room_ids: Optional[List[str]] = None) -> None:
         for i, chunk in enumerate(chunks):
             logger.info("Sending chunk %d/%d", i + 1, len(chunks))
-            self.send_message(chunk)
+            if room_ids is not None:
+                self.send_message(chunk, room_ids=room_ids)
+            else:
+                self.send_message(chunk)
             if i < len(chunks) - 1:
                 time.sleep(1)
+
+    def send_bytes_as_file(self, data: bytes, filename: str, mimetype: str = "application/octet-stream") -> None:
+        """Upload raw bytes as a Matrix file message to all configured rooms."""
+        async def _upload_and_send():
+            import nio
+            client = self._new_client()
+            try:
+                up_resp, _ = await client.upload(
+                    data,
+                    content_type=mimetype,
+                    filename=filename,
+                    filesize=len(data),
+                )
+                if isinstance(up_resp, nio.UploadError):
+                    logger.error("Matrix upload failed for %s: %s", filename, up_resp)
+                    return
+                mxc_url = up_resp.content_uri
+                content = {
+                    "msgtype": "m.file",
+                    "body": filename,
+                    "url": mxc_url,
+                    "info": {"mimetype": mimetype, "size": len(data)},
+                }
+                for room_id in self.room_ids:
+                    send_resp = await client.room_send(
+                        room_id=room_id,
+                        message_type="m.room.message",
+                        content=content,
+                    )
+                    if isinstance(send_resp, nio.RoomSendError):
+                        logger.error("Failed to send file to %s: %s", room_id, send_resp)
+                    else:
+                        logger.info("File %s sent to %s", filename, room_id)
+            finally:
+                await client.close()
+
+        asyncio.run(_upload_and_send())
 
     def send_startup_message(self) -> None:
         self.send_message(

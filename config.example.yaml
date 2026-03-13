@@ -47,3 +47,17 @@ bot:
   allowed_users: []
   # PDF-Anhänge als Matrix-Dateinachrichten senden (true/false)
   send_pdf_attachments: false
+
+# Multi-Stadt: Mehrere Kommunen überwachen (optional).
+# Wenn dieser Block vorhanden und nicht leer ist, werden die Städte einzeln
+# gescraped und ihre Items in den jeweiligen Matrix-Räumen gepostet.
+# Fehlt der Block, wird die globale Konfiguration (scraper.ratsinfo_url) verwendet.
+#
+# cities:
+#   - name: "Musterstadt"
+#     ratsinfo_url: "https://ratsinfo.musterstadt.de/bi/"
+#     room_id: "!abc123:matrix.org"   # optional – überschreibt matrix.room_id
+#     keywords: ["Wohnungsbau"]        # optional – überschreibt scraper.keywords
+#     system_prompt: ""                # optional – überschreibt openrouter.system_prompt
+#   - name: "Beispieldorf"
+#     ratsinfo_url: "https://ratsinfo.beispieldorf.de/bi/"

@@ -2,7 +2,7 @@ import os
 import tempfile
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import yaml
 
@@ -38,7 +38,34 @@ DEFAULT_CONFIG = {
         "healthcheck_port": 0,
         "send_pdf_attachments": False,
     },
+    "cities": [],
 }
+
+
+def get_cities_from_config(config: dict) -> List[dict]:
+    """Return normalized city list from a config dict. Usable without a ConfigManager instance."""
+    cities = config.get("cities", [])
+    base_scraper = config.get("scraper", {})
+    base_matrix = config.get("matrix", {})
+    base_openrouter = config.get("openrouter", {})
+    if cities:
+        result = []
+        for c in cities:
+            result.append({
+                "name": c.get("name", ""),
+                "ratsinfo_url": c.get("ratsinfo_url") or base_scraper.get("ratsinfo_url", ""),
+                "room_id": c.get("room_id") or base_matrix.get("room_id", ""),
+                "keywords": c.get("keywords", base_scraper.get("keywords", [])),
+                "system_prompt": c.get("system_prompt") or base_openrouter.get("system_prompt", ""),
+            })
+        return result
+    return [{
+        "name": "",
+        "ratsinfo_url": base_scraper.get("ratsinfo_url", ""),
+        "room_id": base_matrix.get("room_id", ""),
+        "keywords": base_scraper.get("keywords", []),
+        "system_prompt": base_openrouter.get("system_prompt", ""),
+    }]
 
 
 class ConfigManager:
@@ -95,6 +122,10 @@ class ConfigManager:
         ratsinfo_url = config.get("scraper", {}).get("ratsinfo_url", "")
         has_room = bool(room_id or room_ids)
         return bool(token and api_key and homeserver and has_room and ratsinfo_url)
+
+    def get_cities(self) -> List[dict]:
+        """Return normalized city list. Falls back to global config if cities: [] is absent."""
+        return get_cities_from_config(self.load())
 
     def get(self, *keys: str, default: Any = None) -> Any:
         config = self.load()

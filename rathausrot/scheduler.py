@@ -8,7 +8,7 @@ from typing import List, Optional
 import schedule
 import time
 
-from rathausrot.config_manager import ConfigManager
+from rathausrot.config_manager import ConfigManager, get_cities_from_config
 from rathausrot.scraper import RatsinfoScraper, RunHistoryTracker, LLMCache, RetryQueue, CouncilItemStore
 from rathausrot.llm_client import OpenRouterClient, LLMResult
 from rathausrot.formatter import MatrixFormatter
@@ -37,6 +37,7 @@ class BotScheduler:
 
     def run_pipeline(self, force: bool = False) -> None:
         logger.info("Starting pipeline run (force=%s)", force)
+        import copy
         item_count = 0
         self._cancel_event.clear()
         with self._progress_lock:
@@ -48,20 +49,14 @@ class BotScheduler:
                 "started_at": datetime.now(),
             }
         try:
-            scraper = RatsinfoScraper(self.config)
             llm_client = OpenRouterClient(self.config)
             formatter = MatrixFormatter()
-
             relevance_threshold = self.config.get("bot", {}).get("relevance_threshold", 1)
-            source_url = self.config.get("scraper", {}).get("ratsinfo_url", "")
-
-            total = scraper.count_upcoming_items()
-            with self._progress_lock:
-                self._pipeline_progress["items_total"] = total
-
             send_pdfs = self.config.get("bot", {}).get("send_pdf_attachments", False)
 
-            # Process retry queue first
+            # Process retry queue first (global, no city context)
+            retry_scraper = RatsinfoScraper(self.config)
+            source_url_global = self.config.get("scraper", {}).get("ratsinfo_url", "")
             for item in self._retry_queue.get_pending():
                 logger.info("Retrying item from queue: %s", item.title)
                 result = llm_client.analyze_item(item)
@@ -72,9 +67,11 @@ class BotScheduler:
                 self._llm_cache.put(item.id, result)
                 if result.relevance_score < relevance_threshold:
                     logger.debug("Retry item skipped by relevance threshold: %s", item.title)
-                    scraper.tracker.mark_processed(item.id)
+                    retry_scraper.tracker.mark_processed(item.id)
                     continue
-                chunks = formatter.format_single_item_report(item, result, source_url)
+                chunks = formatter.format_single_item_report(
+                    item, result, source_url_global, city_name=item.city_name
+                )
                 if self._bot is not None:
                     self._bot.send_chunks(chunks)
                     if send_pdfs:
@@ -82,48 +79,85 @@ class BotScheduler:
                             fname = pdf_url.rstrip("/").split("/")[-1] or "dokument.pdf"
                             self._bot.send_file(pdf_url, fname)
                 item_count += 1
-                scraper.tracker.mark_processed(item.id)
+                retry_scraper.tracker.mark_processed(item.id)
 
-            for item in scraper.fetch_new_items(force=force):
+            # Process each city
+            cities = get_cities_from_config(self.config)
+            for city in cities:
                 if self._cancel_event.is_set():
                     logger.info("Pipeline cancelled by user")
                     break
-                self._item_store.store(item)
+
+                city_name = city.get("name", "")
+                source_url = city.get("ratsinfo_url", "")
+                city_room_id = city.get("room_id", "")
+                room_ids = [city_room_id] if city_room_id else (self._bot.room_ids if self._bot else [])
+
+                # Build per-city config (override scraper URL and keywords)
+                city_config = copy.deepcopy(self.config)
+                city_config["scraper"]["ratsinfo_url"] = source_url
+                city_config["scraper"]["keywords"] = city.get("keywords", [])
+                if city.get("system_prompt"):
+                    city_config["openrouter"]["system_prompt"] = city["system_prompt"]
+
+                scraper = RatsinfoScraper(city_config, city_name=city_name)
+
+                # Session announcements
+                sessions = scraper.fetch_sessions()
+                new_sessions = self._item_store.get_new_sessions(sessions)
+                for session in new_sessions:
+                    logger.info("New session announced: %s", session.title)
+                    msg = formatter.format_session_announcement(session)
+                    if self._bot is not None:
+                        self._bot.send_message(msg, room_ids=room_ids)
+                    self._item_store.mark_session_announced(session)
+
+                total = scraper.count_upcoming_items()
                 with self._progress_lock:
-                    self._pipeline_progress["current_item"] = item.title
-                logger.info("Analyzing item: %s", item.title)
-                cached = self._llm_cache.get(item.id)
-                if cached is not None:
-                    logger.info("LLM cache hit for item: %s", item.id)
-                    try:
-                        result = LLMResult(**cached)
-                    except Exception as cache_exc:
-                        logger.warning("Corrupt cache entry for %s, re-analyzing: %s", item.id, cache_exc)
-                        cached = None
+                    current_total = self._pipeline_progress.get("items_total") or 0
+                    self._pipeline_progress["items_total"] = (current_total + total) if total else current_total or None
+
+                for item in scraper.fetch_new_items(force=force):
+                    if self._cancel_event.is_set():
+                        logger.info("Pipeline cancelled by user")
+                        break
+                    self._item_store.store(item)
+                    with self._progress_lock:
+                        self._pipeline_progress["current_item"] = item.title
+                    logger.info("Analyzing item: %s", item.title)
+                    cached = self._llm_cache.get(item.id)
+                    if cached is not None:
+                        logger.info("LLM cache hit for item: %s", item.id)
+                        try:
+                            result = LLMResult(**cached)
+                        except Exception as cache_exc:
+                            logger.warning("Corrupt cache entry for %s, re-analyzing: %s", item.id, cache_exc)
+                            result = llm_client.analyze_item(item)
+                            self._llm_cache.put(item.id, result)
+                    else:
                         result = llm_client.analyze_item(item)
                         self._llm_cache.put(item.id, result)
-                else:
-                    result = llm_client.analyze_item(item)
-                    self._llm_cache.put(item.id, result)
-                if result is None:
-                    logger.warning("LLM analysis failed, adding to retry queue: %s", item.id)
-                    self._retry_queue.add(item)
-                else:
-                    if result.relevance_score < relevance_threshold:
-                        logger.debug("Item skipped by relevance threshold (%d < %d): %s",
-                                     result.relevance_score, relevance_threshold, item.title)
+                    if result is None:
+                        logger.warning("LLM analysis failed, adding to retry queue: %s", item.id)
+                        self._retry_queue.add(item)
                     else:
-                        chunks = formatter.format_single_item_report(item, result, source_url)
-                        if self._bot is not None:
-                            self._bot.send_chunks(chunks)
-                            if send_pdfs:
-                                for pdf_url in item.pdf_urls:
-                                    fname = pdf_url.rstrip("/").split("/")[-1] or "dokument.pdf"
-                                    self._bot.send_file(pdf_url, fname)
-                        item_count += 1
-                    scraper.tracker.mark_processed(item.id)
-                with self._progress_lock:
-                    self._pipeline_progress["items_done"] += 1
+                        if result.relevance_score < relevance_threshold:
+                            logger.debug("Item skipped by relevance threshold (%d < %d): %s",
+                                         result.relevance_score, relevance_threshold, item.title)
+                        else:
+                            chunks = formatter.format_single_item_report(
+                                item, result, source_url, city_name=city_name
+                            )
+                            if self._bot is not None:
+                                self._bot.send_chunks(chunks, room_ids=room_ids)
+                                if send_pdfs:
+                                    for pdf_url in item.pdf_urls:
+                                        fname = pdf_url.rstrip("/").split("/")[-1] or "dokument.pdf"
+                                        self._bot.send_file(pdf_url, fname)
+                            item_count += 1
+                        scraper.tracker.mark_processed(item.id)
+                    with self._progress_lock:
+                        self._pipeline_progress["items_done"] += 1
 
             if item_count == 0:
                 logger.info("No new items found")
@@ -183,7 +217,11 @@ class BotScheduler:
         start_healthcheck(healthcheck_port, scheduler_ref=self)
 
         self._bot = MatrixBot(self.config)
-        command_handler = CommandHandler(self.config, self, send_extra=self._bot.send_chunks)
+        command_handler = CommandHandler(
+            self.config, self,
+            send_extra=self._bot.send_chunks,
+            send_file_bytes=self._bot.send_bytes_as_file,
+        )
         self._bot.start_command_listener(command_handler)
 
         if run_now or self._should_run_on_startup():

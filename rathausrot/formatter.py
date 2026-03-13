@@ -3,7 +3,7 @@ import logging
 from typing import List, Optional, Tuple
 
 from rathausrot.utils import chunk_html, strip_html
-from rathausrot.scraper import CouncilItem
+from rathausrot.scraper import CouncilItem, Session
 from rathausrot.llm_client import LLMResult
 
 logger = logging.getLogger(__name__)
@@ -34,12 +34,14 @@ class MatrixFormatter:
         item: CouncilItem,
         result: Optional[LLMResult],
         source_url: str = "",
+        city_name: str = "",
     ) -> List[str]:
         if source_url:
             source_link = f' – <a href="{html.escape(source_url, quote=True)}">Ratsinfo</a>'
         else:
             source_link = ""
-        header = f"<p>🔴 <strong>Neue Vorlage</strong>{source_link}</p>\n<hr>\n"
+        city_prefix = f" [{html.escape(city_name)}]" if city_name else ""
+        header = f"<p>🔴 <strong>Neue Vorlage{city_prefix}</strong>{source_link}</p>\n<hr>\n"
         body = self.format_item(item, result)
         footer = self.format_footer()
         full_html = header + body + "\n<hr>\n" + footer
@@ -91,6 +93,16 @@ class MatrixFormatter:
 
     def format_footer(self) -> str:
         return f"<p>{DISCLAIMER}</p>"
+
+    def format_session_announcement(self, session: Session) -> str:
+        safe_url = html.escape(session.url, quote=True)
+        safe_title = html.escape(session.title)
+        date_part = f" am {html.escape(session.date)}" if session.date else ""
+        body_part = f" ({html.escape(session.body_name)})" if session.body_name else ""
+        return (
+            f'<p>📅 <strong>Neue Sitzung:</strong> '
+            f'<a href="{safe_url}">{safe_title}</a>{body_part}{date_part}</p>'
+        )
 
     def format_test_message(self) -> str:
         return (

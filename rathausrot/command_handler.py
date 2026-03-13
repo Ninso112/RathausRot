@@ -12,6 +12,7 @@ HELP_TEXT = (
     "<li><code>!scrape</code> – Manuellen Scrape jetzt starten</li>"
     "<li><code>!abbruch</code> – Laufenden Scrape abbrechen</li>"
     "<li><code>!suche &lt;Begriff&gt;</code> – Gespeicherte Vorlagen durchsuchen</li>"
+    "<li><code>!kalender</code> – ICS-Kalender aller gespeicherten Termine herunterladen</li>"
     "<li><code>!status</code> – Bot-Status anzeigen</li>"
     "<li><code>!verlauf</code> – Letzte Scrape-Läufe anzeigen</li>"
     "<li><code>!nächste</code> – Nächsten geplanten Lauf anzeigen</li>"
@@ -26,10 +27,17 @@ HELP_TEXT = (
 
 
 class CommandHandler:
-    def __init__(self, config: dict, scheduler_ref, send_extra: Optional[Callable[[List[str]], None]] = None):
+    def __init__(
+        self,
+        config: dict,
+        scheduler_ref,
+        send_extra: Optional[Callable[[List[str]], None]] = None,
+        send_file_bytes: Optional[Callable] = None,
+    ):
         self.config = config
         self.scheduler_ref = scheduler_ref
         self._send_extra = send_extra
+        self._send_file_bytes = send_file_bytes
         self.bot_username = config.get("matrix", {}).get("username", "")
         self.allowed_users: list = config.get("bot", {}).get("allowed_users", [])
         self._scrape_lock = threading.Lock()
@@ -41,6 +49,7 @@ class CommandHandler:
             "!scrape": self._cmd_scrape,
             "!abbruch": self._cmd_abbruch,
             "!suche": self._cmd_suche,
+            "!kalender": self._cmd_kalender,
             "!status": self._cmd_status,
             "!verlauf": self._cmd_verlauf,
             "!nächste": self._cmd_naechste,
@@ -128,6 +137,24 @@ class CommandHandler:
             f"<p>🔍 <strong>{html.escape(query)}</strong> – {len(results)} Treffer:</p>"
             f"<ul>{items_html}</ul>"
         )
+
+    def _cmd_kalender(self, sender: str, body: str) -> str:
+        from rathausrot.scraper import CouncilItemStore
+        from rathausrot.calendar_generator import generate_ics
+        items = CouncilItemStore().get_all_as_items(limit=500)
+        if not items:
+            return "<p>📅 Keine Termine gespeichert. Zuerst <code>!scrape</code> ausführen.</p>"
+        try:
+            ics_data = generate_ics(items)
+        except ImportError as exc:
+            return f"<p>❌ {html.escape(str(exc))}</p>"
+        if self._send_file_bytes is not None:
+            def _upload():
+                self._send_file_bytes(ics_data, "rathausrot.ics", "text/calendar")
+            thread = threading.Thread(target=_upload, daemon=True, name="kalender-upload")
+            thread.start()
+            return f"<p>📅 Kalender mit {len(items)} Terminen wird hochgeladen…</p>"
+        return "<p>❌ Datei-Upload nicht verfügbar.</p>"
 
     def _cmd_abbruch(self, sender: str, body: str) -> str:
         with self._scrape_lock:

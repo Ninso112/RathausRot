@@ -29,11 +29,13 @@
 
 ### Scraping & Datenerfassung
 - **Automatisches Scraping** von SessionNet- und AllRis-Ratsinfo-Systemen
+- **Multi-Stadt-Support** – Mehrere Kommunen gleichzeitig überwachen, jede mit eigenem Raum, Keywords und Prompt
 - **PDF-Extraktion** – Anhänge und Vorlagen werden automatisch heruntergeladen und ausgelesen
+- **PDF-Anhänge senden** – PDFs optional als Dateinachrichten direkt in den Matrix-Raum hochladen
 - **Keyword-Filter** – Optional nur bestimmte Themen verarbeiten
 - **Duplikat-Erkennung** – SQLite-Datenbank verhindert doppelte Meldungen
 - **Item-Archiv** – Alle gescrapten Vorlagen werden in SQLite gespeichert und sind durchsuchbar
-- **Robots.txt-Respekt** – Ethisches Crawling mit Rate-Limiting
+- **Robots.txt-Respekt** – Ethisches Crawling mit Rate-Limiting (konfigurierbar über `respect_robots_txt`)
 
 ### KI-Analyse
 - **Zusammenfassung** – Automatische Zusammenfassung von Tagesordnungspunkten via OpenRouter
@@ -46,6 +48,7 @@
 - **Formatierte HTML-Berichte** direkt in deinen Matrix-Raum
 - **Multi-Room-Support** – Berichte in mehrere Räume gleichzeitig senden
 - **Chat-Befehle** – Interaktive Steuerung per Chatnachricht (siehe unten)
+- **ICS-Kalender-Export** – Alle gespeicherten Termine als `.ics`-Datei per `!kalender` herunterladen
 - **Berechtigungssystem** – Erlaubte Nutzer für Befehle konfigurierbar
 - **Startup/Shutdown-Nachrichten** – Bot meldet sich an und ab
 
@@ -71,12 +74,14 @@
 | `!scrape` | Manuellen Scrape sofort starten |
 | `!abbruch` | Laufenden Scrape abbrechen |
 | `!suche <Begriff>` | Gespeicherte Vorlagen durchsuchen (z.B. `!suche Haushalt`) |
+| `!kalender` | ICS-Kalender aller gespeicherten Termine herunterladen |
 | `!status` | Bot-Status anzeigen inkl. Scrape-Fortschritt und ETA |
 | `!verlauf` | Letzte Scrape-Läufe anzeigen |
 | `!nächste` | Nächsten geplanten Lauf anzeigen |
 | `!statistik` | Scrape-Statistiken anzeigen |
-| `!stat` | Systemauslastung (CPU, RAM, Disk, Uptime) |
+| `!stat` | Systemauslastung (CPU, RAM, Disk, Uptime, CPU-Temperatur) |
 | `!log [level] [anzahl]` | Bot-Logs anzeigen (z.B. `!log error 20`) |
+| `!config` | Aktuelle Konfiguration anzeigen |
 | `!version` | Version anzeigen |
 
 ---
@@ -119,6 +124,7 @@ Sie ersetzen nicht das Lesen der Originalvorlagen.
 - Ein Matrix-Account für den Bot
 - Ein [OpenRouter](https://openrouter.ai) API-Schlüssel
 - Zugang zum Ratsinfo-System deiner Stadt
+- `icalendar>=5.0` (für `!kalender`-Befehl, wird automatisch installiert)
 
 ### Debian/Ubuntu/Raspberry Pi OS
 
@@ -195,6 +201,7 @@ scraper:
   max_pdf_pages: 10                      # Max. Seiten pro PDF-Anhang
   request_timeout: 30                    # HTTP-Timeout in Sekunden
   keywords: []                           # Keyword-Filter (leer = alles)
+  respect_robots_txt: true               # robots.txt respektieren (false = Prüfung überspringen)
 
 bot:
   interval_minutes: 360                  # Polling-Intervall in Minuten (Standard: 6 Stunden)
@@ -203,8 +210,19 @@ bot:
   healthcheck_port: 0                    # HTTP-Port (0 = deaktiviert)
   log_level: "INFO"
   log_file: "rathausrot.log"
+  send_pdf_attachments: false            # PDFs als Dateinachricht senden
   allowed_users:                         # Wer Befehle nutzen darf
     - "@admin:matrix.org"
+
+# Multi-Stadt: Mehrere Kommunen parallel überwachen (optional)
+# cities:
+#   - name: "Musterstadt"
+#     ratsinfo_url: "https://ratsinfo.musterstadt.de/bi/"
+#     room_id: "!abc123:matrix.org"      # optional – überschreibt matrix.room_id
+#     keywords: ["Wohnungsbau"]          # optional – überschreibt scraper.keywords
+#     system_prompt: ""                  # optional – eigener KI-Prompt
+#   - name: "Beispieldorf"
+#     ratsinfo_url: "https://ratsinfo.beispieldorf.de/bi/"
 ```
 
 ---
@@ -289,6 +307,15 @@ A: Nein – es sind KI-generierte Zusammenfassungen, die Fehler enthalten könne
 
 **Q: Kann ich mehrere Räume gleichzeitig bespielen?**
 A: Ja – nutze `room_ids` (Liste) statt `room_id` in der Config.
+
+**Q: Kann ich mehrere Städte gleichzeitig überwachen?**
+A: Ja – nutze den `cities:`-Block in der Config. Jede Stadt bekommt eine eigene URL, kann einem eigenen Raum zugewiesen werden und unterstützt individuelle Keywords und System-Prompts.
+
+**Q: Wie exportiere ich alle Termine als Kalender?**
+A: Schreibe `!kalender` in den Matrix-Raum. Der Bot sendet eine `.ics`-Datei, die du in Kalender-Apps (Thunderbird, Google Calendar, etc.) importieren kannst.
+
+**Q: Werden PDFs automatisch in den Raum hochgeladen?**
+A: Optional – setze `send_pdf_attachments: true` in der Config. Dann werden relevante PDF-Anhänge als Dateinachrichten direkt in den Raum gesendet.
 
 **Q: Wie aktiviere ich den Health-Check?**
 A: Setze `healthcheck_port` auf einen Port (z.B. `8080`). Der Endpunkt `/health` gibt JSON mit Status zurück.

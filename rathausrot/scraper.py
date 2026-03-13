@@ -36,6 +36,16 @@ class CouncilItem:
     pdf_texts: List[str] = field(default_factory=list)
     pdf_urls: List[str] = field(default_factory=list)
     source_system: str = "unknown"
+    city_name: str = ""
+
+
+@dataclass
+class Session:
+    id: str
+    title: str
+    date: str
+    url: str
+    body_name: str = ""
 
 
 class DuplicateTracker:
@@ -162,6 +172,11 @@ class CouncilItemStore:
                 "body_text TEXT, "
                 "stored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS known_sessions "
+                "(id TEXT PRIMARY KEY, title TEXT, date TEXT, url TEXT, "
+                "announced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            )
             conn.commit()
 
     def store(self, item: "CouncilItem") -> None:
@@ -172,6 +187,42 @@ class CouncilItemStore:
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (item.id, item.title, item.url, item.date,
                  item.item_type, item.source_system, item.body_text),
+            )
+            conn.commit()
+
+    def get_all_as_items(self, limit: int = 500) -> List["CouncilItem"]:
+        """Return all stored items as CouncilItem objects (no pdf_texts/pdf_urls)."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT item_id, title, url, date, item_type, source_system, body_text "
+                "FROM council_items ORDER BY stored_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            CouncilItem(
+                id=r[0], title=r[1], url=r[2], date=r[3],
+                item_type=r[4], source_system=r[5], body_text=r[6],
+            )
+            for r in rows
+        ]
+
+    def get_new_sessions(self, sessions: List["Session"]) -> List["Session"]:
+        """Return sessions not yet in known_sessions."""
+        new = []
+        with sqlite3.connect(self.db_path) as conn:
+            for s in sessions:
+                row = conn.execute(
+                    "SELECT 1 FROM known_sessions WHERE id = ?", (s.id,)
+                ).fetchone()
+                if row is None:
+                    new.append(s)
+        return new
+
+    def mark_session_announced(self, session: "Session") -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO known_sessions (id, title, date, url) VALUES (?, ?, ?, ?)",
+                (session.id, session.title, session.date, session.url),
             )
             conn.commit()
 
@@ -225,8 +276,9 @@ class LLMCache:
 
 
 class RatsinfoScraper:
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, city_name: str = ""):
         self.config = config
+        self.city_name = city_name
         self.base_url = config.get("scraper", {}).get("ratsinfo_url", "")
         self.timeout = config.get("scraper", {}).get("request_timeout", 30)
         self.max_pdf_pages = config.get("scraper", {}).get("max_pdf_pages", 10)
@@ -446,6 +498,7 @@ class RatsinfoScraper:
             pdf_texts=pdf_texts,
             pdf_urls=pdf_urls,
             source_system="sternberg",
+            city_name=self.city_name,
         )
 
     def _fetch_generic(self, force: bool = False) -> Iterator[CouncilItem]:
@@ -477,6 +530,7 @@ class RatsinfoScraper:
                     date="",
                     body_text=truncate_text(body_text, 12000),
                     source_system="generic",
+                    city_name=self.city_name,
                 )
                 yield item
             except Exception as exc:
@@ -523,6 +577,7 @@ class RatsinfoScraper:
             pdf_texts=pdf_texts,
             pdf_urls=pdf_urls,
             source_system=source_system,
+            city_name=self.city_name,
         )
 
     def _fetch_page(self, url: str) -> Optional[BeautifulSoup]:
@@ -556,6 +611,84 @@ class RatsinfoScraper:
     def _build_item_id(self, url: str, title: str) -> str:
         raw = f"{url}|{title}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+    def fetch_sessions(self) -> List[Session]:
+        """Fetch session list from the council system. Returns new sessions for announcement."""
+        if not self.base_url:
+            return []
+        system = self.detect_system()
+        try:
+            if system == "sternberg":
+                return self._fetch_sessions_sternberg()
+            elif system == "sessionnet":
+                return self._fetch_sessions_sessionnet()
+            else:
+                return []
+        except Exception as exc:
+            logger.warning("fetch_sessions failed: %s", exc)
+            return []
+
+    def _fetch_sessions_sternberg(self) -> List[Session]:
+        sitzungen_url = urljoin(self.base_url, "/sitzungen")
+        soup = self._fetch_page(sitzungen_url)
+        if soup is None:
+            return []
+        sessions = []
+        for a in soup.find_all("a", href=lambda h: h and "/tops/?__=" in h):
+            try:
+                href = a["href"]
+                url = urljoin(self.base_url, href)
+                if not _is_safe_url(url):
+                    continue
+                title = a.get_text(strip=True)
+                if not title:
+                    continue
+                parent = a.find_parent(["tr", "li", "div"])
+                date_str = ""
+                body_name = ""
+                if parent:
+                    text = parent.get_text(" ", strip=True)
+                    date_match = re.search(r'\d{2}\.\d{2}\.\d{4}', text)
+                    if date_match:
+                        date_str = date_match.group(0)
+                session_id = self._build_item_id(url, title)
+                sessions.append(Session(
+                    id=session_id,
+                    title=title,
+                    date=date_str,
+                    url=url,
+                    body_name=body_name,
+                ))
+            except Exception as exc:
+                logger.warning("Error parsing Sternberg session: %s", exc)
+        return sessions
+
+    def _fetch_sessions_sessionnet(self) -> List[Session]:
+        soup = self._fetch_page(self.base_url)
+        if soup is None:
+            return []
+        sessions = []
+        for a in soup.find_all("a", href=lambda h: h and any(
+            kw in h.lower() for kw in ["sitzung", "session", "tops", "gremien"]
+        )):
+            try:
+                href = a["href"]
+                url = urljoin(self.base_url, href)
+                if not _is_safe_url(url):
+                    continue
+                title = a.get_text(strip=True)
+                if not title or len(title) < 5:
+                    continue
+                session_id = self._build_item_id(url, title)
+                sessions.append(Session(
+                    id=session_id,
+                    title=title,
+                    date="",
+                    url=url,
+                ))
+            except Exception as exc:
+                logger.warning("Error parsing SessionNet session: %s", exc)
+        return sessions
 
     def _check_robots(self, url: str) -> bool:
         try:
