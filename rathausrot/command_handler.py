@@ -1,5 +1,7 @@
 import html
 import logging
+import os
+import signal
 import threading
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
@@ -21,6 +23,7 @@ HELP_TEXT = (
     "<li><code>!log [level] [anzahl]</code> – Bot-Logs anzeigen</li>"
     "<li><code>!config</code> – Aktuelle Konfiguration anzeigen</li>"
     "<li><code>!version</code> – Version anzeigen</li>"
+    "<li><code>!stop</code> – Bot herunterfahren</li>"
     "<li><code>!hilfe</code> – Diese Hilfe anzeigen</li>"
     "</ul>"
 )
@@ -59,6 +62,7 @@ class CommandHandler:
             "!log": self._cmd_log,
             "!version": self._cmd_version,
             "!config": self._cmd_config,
+            "!stop": self._cmd_stop,
         }
 
     def is_allowed(self, sender: str) -> bool:
@@ -415,6 +419,17 @@ class CommandHandler:
             f"<li><strong>Erlaubte Nutzer:</strong> {allowed_str}</li>"
             "</ul>"
         )
+
+
+    def _cmd_stop(self, sender: str, body: str) -> str:
+        logger.info("Stop command received from %s – sending SIGTERM", sender)
+        def _shutdown():
+            import time
+            time.sleep(1)  # Antwort zuerst senden lassen
+            os.kill(os.getpid(), signal.SIGTERM)
+        thread = threading.Thread(target=_shutdown, daemon=True, name="stop-signal")
+        thread.start()
+        return "<p>🛑 <strong>RathausRot wird heruntergefahren…</strong></p>"
 
 
 def _format_duration(seconds: float) -> str:
