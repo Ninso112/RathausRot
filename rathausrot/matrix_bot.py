@@ -4,6 +4,8 @@ import threading
 import time
 from typing import List, Optional
 
+import requests as _requests
+
 from rathausrot.utils import strip_html
 
 logger = logging.getLogger(__name__)
@@ -95,6 +97,51 @@ class MatrixBot:
             "<p><strong>🔴 RathausRot wird gestoppt</strong></p>"
             "<p>Der Bot wurde heruntergefahren.</p>"
         )
+
+    def send_file(self, url: str, filename: str) -> None:
+        """Download a file from *url* and upload it to all Matrix rooms as m.file."""
+        try:
+            resp = _requests.get(url, timeout=60)
+            resp.raise_for_status()
+            data = resp.content
+        except Exception as exc:
+            logger.warning("Could not download file %s: %s", url, exc)
+            return
+
+        async def _upload_and_send():
+            import nio
+            client = self._new_client()
+            try:
+                up_resp, _ = await client.upload(
+                    data,
+                    content_type="application/pdf",
+                    filename=filename,
+                    filesize=len(data),
+                )
+                if isinstance(up_resp, nio.UploadError):
+                    logger.error("Matrix upload failed for %s: %s", filename, up_resp)
+                    return
+                mxc_url = up_resp.content_uri
+                content = {
+                    "msgtype": "m.file",
+                    "body": filename,
+                    "url": mxc_url,
+                    "info": {"mimetype": "application/pdf", "size": len(data)},
+                }
+                for room_id in self.room_ids:
+                    send_resp = await client.room_send(
+                        room_id=room_id,
+                        message_type="m.room.message",
+                        content=content,
+                    )
+                    if isinstance(send_resp, nio.RoomSendError):
+                        logger.error("Failed to send file to %s: %s", room_id, send_resp)
+                    else:
+                        logger.info("File %s sent to %s", filename, room_id)
+            finally:
+                await client.close()
+
+        asyncio.run(_upload_and_send())
 
     def close(self) -> None:
         pass  # send_message now creates a fresh client per call; nothing to close

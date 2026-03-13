@@ -45,3 +45,5 @@ bot:
   # Matrix-Benutzer, die Chat-Befehle ausführen dürfen (z.B. !scrape).
   # Leer lassen (leere Liste), um alle Mitglieder des Raums zuzulassen.
   allowed_users: []
+  # PDF-Anhänge als Matrix-Dateinachrichten senden (true/false)
+  send_pdf_attachments: false

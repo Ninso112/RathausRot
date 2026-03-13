@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
         "allowed_users": [],
         "relevance_threshold": 1,
         "healthcheck_port": 0,
+        "send_pdf_attachments": False,
     },
 }
 

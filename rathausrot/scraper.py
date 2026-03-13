@@ -34,6 +34,7 @@ class CouncilItem:
     date: str
     body_text: str
     pdf_texts: List[str] = field(default_factory=list)
+    pdf_urls: List[str] = field(default_factory=list)
     source_system: str = "unknown"
 
 
@@ -421,12 +422,14 @@ class RatsinfoScraper:
         detail_soup = self._fetch_page(url)
         body_text = ""
         pdf_texts = []
+        pdf_urls = []
         if detail_soup:
             body_text = detail_soup.get_text(" ", strip=True)
             for pdf_link in detail_soup.find_all("a", href=lambda h: h and "/sdnetrim/" in h):
                 pdf_url = urljoin(url, pdf_link["href"])
                 if not _is_safe_url(pdf_url):
                     continue
+                pdf_urls.append(pdf_url)
                 try:
                     text = self._extract_pdf_text(pdf_url, self.max_pdf_pages)
                     if text:
@@ -441,6 +444,7 @@ class RatsinfoScraper:
             date=date_str,
             body_text=truncate_text(body_text, 12000),
             pdf_texts=pdf_texts,
+            pdf_urls=pdf_urls,
             source_system="sternberg",
         )
 
@@ -496,11 +500,13 @@ class RatsinfoScraper:
         detail_soup = self._fetch_page(url)
         body_text = ""
         pdf_texts = []
+        pdf_urls = []
         if detail_soup:
             body_text = detail_soup.get_text(" ", strip=True)
             for pdf_link in detail_soup.find_all("a", href=True):
                 if pdf_link["href"].lower().endswith(".pdf"):
                     pdf_url = urljoin(url, pdf_link["href"])
+                    pdf_urls.append(pdf_url)
                     try:
                         text = self._extract_pdf_text(pdf_url, self.max_pdf_pages)
                         if text:
@@ -515,6 +521,7 @@ class RatsinfoScraper:
             date=date_str,
             body_text=truncate_text(body_text, 12000),
             pdf_texts=pdf_texts,
+            pdf_urls=pdf_urls,
             source_system=source_system,
         )
 

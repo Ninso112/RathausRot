@@ -59,6 +59,8 @@ class BotScheduler:
             with self._progress_lock:
                 self._pipeline_progress["items_total"] = total
 
+            send_pdfs = self.config.get("bot", {}).get("send_pdf_attachments", False)
+
             # Process retry queue first
             for item in self._retry_queue.get_pending():
                 logger.info("Retrying item from queue: %s", item.title)
@@ -75,6 +77,10 @@ class BotScheduler:
                 chunks = formatter.format_single_item_report(item, result, source_url)
                 if self._bot is not None:
                     self._bot.send_chunks(chunks)
+                    if send_pdfs:
+                        for pdf_url in item.pdf_urls:
+                            fname = pdf_url.rstrip("/").split("/")[-1] or "dokument.pdf"
+                            self._bot.send_file(pdf_url, fname)
                 item_count += 1
                 scraper.tracker.mark_processed(item.id)
 
@@ -110,6 +116,10 @@ class BotScheduler:
                         chunks = formatter.format_single_item_report(item, result, source_url)
                         if self._bot is not None:
                             self._bot.send_chunks(chunks)
+                            if send_pdfs:
+                                for pdf_url in item.pdf_urls:
+                                    fname = pdf_url.rstrip("/").split("/")[-1] or "dokument.pdf"
+                                    self._bot.send_file(pdf_url, fname)
                         item_count += 1
                     scraper.tracker.mark_processed(item.id)
                 with self._progress_lock:

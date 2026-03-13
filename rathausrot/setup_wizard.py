@@ -107,6 +107,8 @@ def run_wizard(config_manager) -> None:
     keywords = [kw.strip() for kw in keywords_input.split(",") if kw.strip()]
     allowed_input = prompt("Erlaubte Matrix-IDs (kommasepariert, leer = alle)", "")
     allowed_users = [u.strip() for u in allowed_input.split(",") if u.strip()]
+    pdf_input = prompt("PDF-Anhänge als Dateien in Matrix senden? (j/n)", "n").lower()
+    send_pdf_attachments = pdf_input == "j"
 
     config = {
         "matrix": {
@@ -132,6 +134,7 @@ def run_wizard(config_manager) -> None:
             "party": party,
             "relevance_threshold": relevance_threshold,
             "allowed_users": allowed_users,
+            "send_pdf_attachments": send_pdf_attachments,
             "log_level": "INFO",
             "log_file": "rathausrot.log",
         },
@@ -149,6 +152,7 @@ def run_wizard(config_manager) -> None:
     print(f"  Relevanz-Schwelle:    {relevance_threshold}")
     print(f"  Schlüsselwörter:      {', '.join(keywords) if keywords else '(alle)'}")
     print(f"  Erlaubte Nutzer:      {', '.join(allowed_users) if allowed_users else '(alle)'}")
+    print(f"  PDF-Anhänge senden:   {'ja' if send_pdf_attachments else 'nein'}")
     print(f"  API Key:              {'*' * min(len(api_key), 8)}...")
     print(f"  Access Token:         {'*' * 8}...")
     print()
@@ -226,6 +230,9 @@ def run_edit_wizard(config_manager) -> None:
     cur_allowed = ", ".join(b.get("allowed_users", []))
     allowed_input = prompt("Erlaubte Matrix-IDs (kommasepariert, leer = alle)", cur_allowed)
     allowed_users = [u.strip() for u in allowed_input.split(",") if u.strip()]
+    cur_pdf = "j" if b.get("send_pdf_attachments", False) else "n"
+    pdf_input = prompt("PDF-Anhänge als Dateien in Matrix senden? (j/n)", cur_pdf).lower()
+    send_pdf_attachments = pdf_input == "j"
 
     # Merge into existing config
     config["matrix"]["homeserver"] = homeserver
@@ -241,6 +248,7 @@ def run_edit_wizard(config_manager) -> None:
     config["bot"]["party"] = party
     config["bot"]["relevance_threshold"] = relevance_threshold
     config["bot"]["allowed_users"] = allowed_users
+    config["bot"]["send_pdf_attachments"] = send_pdf_attachments
 
     print(colored("\n--- Geänderte Werte werden gespeichert ---", Colors.BOLD))
     confirm = input("Speichern? [J/n]: ").strip().lower()
