@@ -6,7 +6,9 @@ from html.parser import HTMLParser
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
-RATSINFO_USER_AGENT = "RathausRot/1.0 (Kommunalpolitik-Bot; +https://github.com/dein-user/rathausrot)"
+RATSINFO_USER_AGENT = (
+    "RathausRot/1.0 (Kommunalpolitik-Bot; +https://github.com/dein-user/rathausrot)"
+)
 
 
 class MemoryLogHandler(logging.Handler):
@@ -30,7 +32,9 @@ class MemoryLogHandler(logging.Handler):
 _memory_handler: Optional[MemoryLogHandler] = None
 
 
-def setup_logging(log_file: str = "rathausrot.log", level: str = "INFO") -> MemoryLogHandler:
+def setup_logging(
+    log_file: str = "rathausrot.log", level: str = "INFO"
+) -> MemoryLogHandler:
     global _memory_handler
     numeric_level = getattr(logging, level.upper(), logging.INFO)
     formatter = logging.Formatter(
@@ -42,7 +46,9 @@ def setup_logging(log_file: str = "rathausrot.log", level: str = "INFO") -> Memo
     if root.handlers:
         root.handlers.clear()
 
-    fh = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    fh = RotatingFileHandler(
+        log_file, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
     fh.setFormatter(formatter)
     root.addHandler(fh)
 
@@ -63,10 +69,12 @@ def get_memory_handler() -> Optional[MemoryLogHandler]:
 
 def chunk_html(html: str, max_bytes: int = 60000) -> list:
     """Split HTML into chunks at </p> or </li> boundaries, each <= max_bytes."""
+    if not html:
+        return []
     chunks = []
     current = ""
     # Split at closing block tags but keep the delimiter
-    parts = re.split(r'(</p>|</li>|</h3>|<hr\s*/?>)', html)
+    parts = re.split(r"(</p>|</li>|</h3>|<hr\s*/?>)", html)
     for part in parts:
         candidate = current + part
         if len(candidate.encode("utf-8")) > max_bytes and current:
@@ -86,7 +94,7 @@ def rate_limit_sleep(seconds: float = 2.0) -> None:
 def truncate_text(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
-    return text[:max_chars - 3] + "..."
+    return text[: max_chars - 3] + "..."
 
 
 class _HTMLStripper(HTMLParser):

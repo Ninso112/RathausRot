@@ -84,7 +84,9 @@ class CommandHandler:
             return None
         if not self.is_allowed(sender):
             logger.warning("Unauthorized command attempt from %s: %s", sender, cmd)
-            return f"<p>⛔ Keine Berechtigung für <code>{html.escape(sender)}</code>.</p>"
+            return (
+                f"<p>⛔ Keine Berechtigung für <code>{html.escape(sender)}</code>.</p>"
+            )
         logger.info("Command '%s' from %s", cmd, sender)
         try:
             return self._commands[cmd](sender, body)
@@ -124,9 +126,12 @@ class CommandHandler:
             return "<p>Verwendung: <code>!suche &lt;Suchbegriff&gt;</code></p>"
         query = parts[1].strip()
         from rathausrot.scraper import CouncilItemStore
+
         results = CouncilItemStore().search(query, limit=10)
         if not results:
-            return f"<p>🔍 Keine Ergebnisse für <strong>{html.escape(query)}</strong>.</p>"
+            return (
+                f"<p>🔍 Keine Ergebnisse für <strong>{html.escape(query)}</strong>.</p>"
+            )
         items_html = ""
         for r in results:
             title = html.escape(r["title"])
@@ -135,7 +140,7 @@ class CommandHandler:
             stored = r["stored_at"][:10] if r["stored_at"] else "–"
             items_html += (
                 f'<li><a href="{url}">{title}</a>'
-                f' <em>({date}, gespeichert: {stored})</em></li>'
+                f" <em>({date}, gespeichert: {stored})</em></li>"
             )
         return (
             f"<p>🔍 <strong>{html.escape(query)}</strong> – {len(results)} Treffer:</p>"
@@ -145,6 +150,7 @@ class CommandHandler:
     def _cmd_kalender(self, sender: str, body: str) -> str:
         from rathausrot.scraper import CouncilItemStore
         from rathausrot.calendar_generator import generate_ics
+
         items = CouncilItemStore().get_all_as_items(limit=500)
         if not items:
             return "<p>📅 Keine Termine gespeichert. Zuerst <code>!scrape</code> ausführen.</p>"
@@ -153,9 +159,13 @@ class CommandHandler:
         except ImportError as exc:
             return f"<p>❌ {html.escape(str(exc))}</p>"
         if self._send_file_bytes is not None:
+
             def _upload():
                 self._send_file_bytes(ics_data, "rathausrot.ics", "text/calendar")
-            thread = threading.Thread(target=_upload, daemon=True, name="kalender-upload")
+
+            thread = threading.Thread(
+                target=_upload, daemon=True, name="kalender-upload"
+            )
             thread.start()
             return f"<p>📅 Kalender mit {len(items)} Terminen wird hochgeladen…</p>"
         return "<p>❌ Datei-Upload nicht verfügbar.</p>"
@@ -194,26 +204,30 @@ class CommandHandler:
             current = prog.get("current_item", "")
             started_at = prog.get("started_at")
 
-            if total is not None and total > 0:
+            if total is not None and total > 0 and done > 0:
                 pct = int(done / total * 100)
                 bar_filled = round(pct / 10)
                 bar = "█" * bar_filled + "░" * (10 - bar_filled)
                 progress_line = f"{done}/{total} Items ({pct}%) [{bar}]"
-                if done > 0 and started_at:
+                if started_at:
                     elapsed = (datetime.now() - started_at).total_seconds()
                     avg = elapsed / done
                     remaining_secs = (total - done) * avg
                     progress_line += f" – noch ca. {_format_duration(remaining_secs)}"
-            else:
+            elif done > 0:
                 progress_line = f"{done} Items analysiert"
-                if done > 0 and started_at:
+                if started_at:
                     elapsed = (datetime.now() - started_at).total_seconds()
                     avg = elapsed / done
                     progress_line += f" (~{avg:.0f}s/Item)"
+            else:
+                progress_line = "Warte auf Items..."
 
             scrape_status = f"⏳ Scrape läuft – {progress_line}"
             if current:
-                scrape_status += f"<br>&nbsp;&nbsp;<em>Aktuell: {html.escape(current[:70])}</em>"
+                scrape_status += (
+                    f"<br>&nbsp;&nbsp;<em>Aktuell: {html.escape(current[:70])}</em>"
+                )
         else:
             scrape_status = "✅ Bereit"
 
@@ -243,13 +257,12 @@ class CommandHandler:
             except Exception:
                 pass
             count_str = f", {entry['item_count']} Items" if entry["item_count"] else ""
-            error_str = f" – {html.escape(entry['error_msg'])}" if entry["error_msg"] else ""
+            error_str = (
+                f" – {html.escape(entry['error_msg'])}" if entry["error_msg"] else ""
+            )
             items_html += f"<li>{icon} {ts}{count_str}{error_str}</li>"
 
-        return (
-            "<p><strong>📋 Letzte Läufe:</strong></p>"
-            f"<ul>{items_html}</ul>"
-        )
+        return f"<p><strong>📋 Letzte Läufe:</strong></p><ul>{items_html}</ul>"
 
     def _cmd_naechste(self, sender: str, body: str) -> str:
         next_run = self.scheduler_ref.get_next_run_time()
@@ -274,19 +287,19 @@ class CommandHandler:
 
         # RAM
         ram = psutil.virtual_memory()
-        ram_used = ram.used / 1024 ** 3
-        ram_total = ram.total / 1024 ** 3
+        ram_used = ram.used / 1024**3
+        ram_total = ram.total / 1024**3
         ram_percent = ram.percent
 
         # Swap
         swap = psutil.swap_memory()
-        swap_used = swap.used / 1024 ** 3
-        swap_total = swap.total / 1024 ** 3
+        swap_used = swap.used / 1024**3
+        swap_total = swap.total / 1024**3
 
         # Disk (Partition mit /)
         disk = psutil.disk_usage("/")
-        disk_used = disk.used / 1024 ** 3
-        disk_total = disk.total / 1024 ** 3
+        disk_used = disk.used / 1024**3
+        disk_total = disk.total / 1024**3
         disk_percent = disk.percent
 
         # Systemuptime
@@ -357,6 +370,7 @@ class CommandHandler:
 
     def _cmd_log(self, sender: str, body: str) -> str:
         from rathausrot.utils import get_memory_handler
+
         handler = get_memory_handler()
         if handler is None:
             return "<p>Log-Handler nicht verfügbar.</p>"
@@ -380,10 +394,13 @@ class CommandHandler:
         # Chunk if too large (>60KB)
         if len(response.encode("utf-8")) > 60000 and self._send_extra is not None:
             from rathausrot.utils import chunk_html
+
             chunks = chunk_html(response)
             if len(chunks) > 1:
+
                 def send():
                     self._send_extra(chunks[1:])
+
                 thread = threading.Thread(target=send, daemon=True, name="send-logs")
                 thread.start()
             return chunks[0]
@@ -392,6 +409,7 @@ class CommandHandler:
 
     def _cmd_version(self, sender: str, body: str) -> str:
         from rathausrot import __version__
+
         return f"<p>🔴 RathausRot v{__version__}</p>"
 
     def _cmd_config(self, sender: str, body: str) -> str:
@@ -406,7 +424,9 @@ class CommandHandler:
         keywords = s.get("keywords", [])
         keywords_str = html.escape(", ".join(keywords)) if keywords else "(keine)"
         allowed_users = b.get("allowed_users", [])
-        allowed_str = html.escape(", ".join(allowed_users)) if allowed_users else "(alle)"
+        allowed_str = (
+            html.escape(", ".join(allowed_users)) if allowed_users else "(alle)"
+        )
         return (
             "<p><strong>⚙️ RathausRot – Konfiguration</strong></p>"
             "<ul>"
@@ -420,13 +440,15 @@ class CommandHandler:
             "</ul>"
         )
 
-
     def _cmd_stop(self, sender: str, body: str) -> str:
         logger.info("Stop command received from %s – sending SIGTERM", sender)
+
         def _shutdown():
             import time
+
             time.sleep(1)  # Antwort zuerst senden lassen
             os.kill(os.getpid(), signal.SIGTERM)
+
         thread = threading.Thread(target=_shutdown, daemon=True, name="stop-signal")
         thread.start()
         return "<p>🛑 <strong>RathausRot wird heruntergefahren…</strong></p>"

@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import sqlite3
+import threading
 from datetime import date, datetime
 from dataclasses import dataclass, field, asdict
 from io import BytesIO
@@ -12,6 +13,7 @@ from urllib.robotparser import RobotFileParser
 from urllib.parse import urljoin, urlparse, parse_qs
 
 import requests
+from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 
 from rathausrot.utils import RATSINFO_USER_AGENT, rate_limit_sleep, truncate_text
@@ -19,6 +21,32 @@ from rathausrot.utils import RATSINFO_USER_AGENT, rate_limit_sleep, truncate_tex
 logger = logging.getLogger(__name__)
 
 _ALLOWED_SCHEMES = {"http", "https"}
+
+
+class DatabaseManager:
+    """Centralized database connection manager with pooling."""
+
+    _pools: dict = {}
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_connection(cls, db_path: str = "processed_items.db") -> sqlite3.Connection:
+        if db_path not in cls._pools:
+            with cls._lock:
+                if db_path not in cls._pools:
+                    conn = sqlite3.connect(db_path, check_same_thread=False)
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA synchronous=NORMAL")
+                    conn.execute("PRAGMA cache_size=-64000")
+                    cls._pools[db_path] = conn
+        return cls._pools[db_path]
+
+    @classmethod
+    def close_all(cls) -> None:
+        with cls._lock:
+            for conn in cls._pools.values():
+                conn.close()
+            cls._pools.clear()
 
 
 def _is_safe_url(url: str) -> bool:
@@ -54,7 +82,7 @@ class DuplicateTracker:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS processed_items "
                 "(item_id TEXT PRIMARY KEY, processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
@@ -62,18 +90,38 @@ class DuplicateTracker:
             conn.commit()
 
     def is_new(self, item_id: str) -> bool:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             row = conn.execute(
                 "SELECT 1 FROM processed_items WHERE item_id = ?", (item_id,)
             ).fetchone()
         return row is None
 
     def mark_processed(self, item_id: str) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO processed_items (item_id) VALUES (?)", (item_id,)
             )
             conn.commit()
+
+    def check_and_mark_batch(self, item_ids: List[str]) -> List[str]:
+        """Check multiple items at once and mark them as processed. Returns only new item IDs."""
+        if not item_ids:
+            return []
+        with DatabaseManager.get_connection(self.db_path) as conn:
+            placeholders = ",".join("?" * len(item_ids))
+            rows = conn.execute(
+                f"SELECT item_id FROM processed_items WHERE item_id IN ({placeholders})",
+                item_ids,
+            ).fetchall()
+            known_ids = {row[0] for row in rows}
+            new_ids = [item_id for item_id in item_ids if item_id not in known_ids]
+            if new_ids:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO processed_items (item_id) VALUES (?)",
+                    [(item_id,) for item_id in new_ids],
+                )
+                conn.commit()
+        return new_ids
 
 
 class RunHistoryTracker:
@@ -82,7 +130,7 @@ class RunHistoryTracker:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS run_history "
                 "(id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -94,7 +142,7 @@ class RunHistoryTracker:
             conn.commit()
 
     def record_run(self, item_count: int, success: bool, error_msg: str = "") -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "INSERT INTO run_history (item_count, success, error_msg) VALUES (?, ?, ?)",
                 (item_count, 1 if success else 0, error_msg),
@@ -102,14 +150,19 @@ class RunHistoryTracker:
             conn.commit()
 
     def get_recent(self, limit: int = 10) -> List[dict]:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT ran_at, item_count, success, error_msg FROM run_history "
                 "ORDER BY ran_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [
-            {"ran_at": row[0], "item_count": row[1], "success": bool(row[2]), "error_msg": row[3]}
+            {
+                "ran_at": row[0],
+                "item_count": row[1],
+                "success": bool(row[2]),
+                "error_msg": row[3],
+            }
             for row in rows
         ]
 
@@ -120,7 +173,7 @@ class RetryQueue:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS retry_queue "
                 "(item_id TEXT PRIMARY KEY, item_json TEXT, "
@@ -130,7 +183,7 @@ class RetryQueue:
             conn.commit()
 
     def add(self, item: "CouncilItem") -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO retry_queue (item_id, item_json, attempts) "
                 "VALUES (?, ?, COALESCE((SELECT attempts FROM retry_queue WHERE item_id = ?), 0) + 1)",
@@ -139,7 +192,7 @@ class RetryQueue:
             conn.commit()
 
     def get_pending(self, max_attempts: int = 3) -> list:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT item_json FROM retry_queue WHERE attempts < ? ORDER BY added_at",
                 (max_attempts,),
@@ -151,7 +204,7 @@ class RetryQueue:
         return items
 
     def remove(self, item_id: str) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute("DELETE FROM retry_queue WHERE item_id = ?", (item_id,))
             conn.commit()
 
@@ -164,7 +217,7 @@ class CouncilItemStore:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS council_items "
                 "(item_id TEXT PRIMARY KEY, title TEXT, url TEXT, "
@@ -180,19 +233,26 @@ class CouncilItemStore:
             conn.commit()
 
     def store(self, item: "CouncilItem") -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO council_items "
                 "(item_id, title, url, date, item_type, source_system, body_text) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (item.id, item.title, item.url, item.date,
-                 item.item_type, item.source_system, item.body_text),
+                (
+                    item.id,
+                    item.title,
+                    item.url,
+                    item.date,
+                    item.item_type,
+                    item.source_system,
+                    item.body_text,
+                ),
             )
             conn.commit()
 
     def get_all_as_items(self, limit: int = 500) -> List["CouncilItem"]:
         """Return all stored items as CouncilItem objects (no pdf_texts/pdf_urls)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT item_id, title, url, date, item_type, source_system, body_text "
                 "FROM council_items ORDER BY stored_at DESC LIMIT ?",
@@ -200,26 +260,37 @@ class CouncilItemStore:
             ).fetchall()
         return [
             CouncilItem(
-                id=r[0], title=r[1], url=r[2], date=r[3],
-                item_type=r[4], source_system=r[5], body_text=r[6],
+                id=r[0],
+                title=r[1],
+                url=r[2],
+                date=r[3],
+                item_type=r[4],
+                source_system=r[5],
+                body_text=r[6],
             )
             for r in rows
         ]
 
     def get_new_sessions(self, sessions: List["Session"]) -> List["Session"]:
         """Return sessions not yet in known_sessions."""
+        if not sessions:
+            return []
         new = []
-        with sqlite3.connect(self.db_path) as conn:
-            for s in sessions:
-                row = conn.execute(
-                    "SELECT 1 FROM known_sessions WHERE id = ?", (s.id,)
-                ).fetchone()
-                if row is None:
-                    new.append(s)
+        session_ids = [s.id for s in sessions]
+        with DatabaseManager.get_connection(self.db_path) as conn:
+            placeholders = ",".join("?" * len(session_ids))
+            rows = conn.execute(
+                f"SELECT id FROM known_sessions WHERE id IN ({placeholders})",
+                session_ids,
+            ).fetchall()
+            known_ids = {row[0] for row in rows}
+        for s in sessions:
+            if s.id not in known_ids:
+                new.append(s)
         return new
 
     def mark_session_announced(self, session: "Session") -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO known_sessions (id, title, date, url) VALUES (?, ?, ?, ?)",
                 (session.id, session.title, session.date, session.url),
@@ -228,7 +299,7 @@ class CouncilItemStore:
 
     def search(self, query: str, limit: int = 10) -> List[dict]:
         pattern = f"%{query}%"
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT item_id, title, url, date, source_system, stored_at "
                 "FROM council_items "
@@ -237,8 +308,14 @@ class CouncilItemStore:
                 (pattern, pattern, limit),
             ).fetchall()
         return [
-            {"id": r[0], "title": r[1], "url": r[2], "date": r[3],
-             "source_system": r[4], "stored_at": r[5]}
+            {
+                "id": r[0],
+                "title": r[1],
+                "url": r[2],
+                "date": r[3],
+                "source_system": r[4],
+                "stored_at": r[5],
+            }
             for r in rows
         ]
 
@@ -249,7 +326,7 @@ class LLMCache:
         self._init_db()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS llm_cache "
                 "(item_id TEXT PRIMARY KEY, result_json TEXT, "
@@ -258,7 +335,7 @@ class LLMCache:
             conn.commit()
 
     def get(self, item_id: str) -> Optional[dict]:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             row = conn.execute(
                 "SELECT result_json FROM llm_cache WHERE item_id = ?", (item_id,)
             ).fetchone()
@@ -267,7 +344,7 @@ class LLMCache:
         return json.loads(row[0])
 
     def put(self, item_id: str, result) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO llm_cache (item_id, result_json) VALUES (?, ?)",
                 (item_id, json.dumps(asdict(result))),
@@ -282,11 +359,22 @@ class RatsinfoScraper:
         self.base_url = config.get("scraper", {}).get("ratsinfo_url", "")
         self.timeout = config.get("scraper", {}).get("request_timeout", 30)
         self.max_pdf_pages = config.get("scraper", {}).get("max_pdf_pages", 10)
-        self.keywords = [kw.lower() for kw in config.get("scraper", {}).get("keywords", [])]
-        self.respect_robots_txt = config.get("scraper", {}).get("respect_robots_txt", True)
+        self.keywords = [
+            kw.lower() for kw in config.get("scraper", {}).get("keywords", [])
+        ]
+        self.respect_robots_txt = config.get("scraper", {}).get(
+            "respect_robots_txt", True
+        )
         self.tracker = DuplicateTracker()
         self.session = requests.Session()
         self.session.headers["User-Agent"] = RATSINFO_USER_AGENT
+        adapter = HTTPAdapter(
+            pool_connections=10,
+            pool_maxsize=20,
+            max_retries=3,
+        )
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
         self._detected_system: Optional[str] = None
 
     def _is_future_or_unknown_date(self, date_str: str) -> bool:
@@ -294,7 +382,7 @@ class RatsinfoScraper:
         if not date_str:
             return True
         # Strip weekday prefix like "Mi, " or "Mo, "
-        cleaned = re.sub(r'^[A-Za-z\u00c0-\u024f]+,\s*', '', date_str.strip())
+        cleaned = re.sub(r"^[A-Za-z\u00c0-\u024f]+,\s*", "", date_str.strip())
         for fmt in ("%d.%m.%Y %H:%M Uhr", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
             try:
                 dt = datetime.strptime(cleaned, fmt)
@@ -345,7 +433,9 @@ class RatsinfoScraper:
         soup = self._fetch_page(vorlagen_url)
         if soup is None:
             return None
-        table = soup.find(class_="vorlagenübersicht") or soup.find(class_="vorlagenuebersicht")
+        table = soup.find(class_="vorlagenübersicht") or soup.find(
+            class_="vorlagenuebersicht"
+        )
         links = (table or soup).find_all("a", href=lambda h: h and "/vorgang/?__=" in h)
         count = 0
         for a_tag in links:
@@ -367,7 +457,9 @@ class RatsinfoScraper:
             logger.warning("robots.txt disallows crawling %s", self.base_url)
             return
         if not self.respect_robots_txt:
-            logger.warning("robots.txt-Prüfung deaktiviert – stelle sicher, dass du zur Nutzung berechtigt bist.")
+            logger.warning(
+                "robots.txt-Prüfung deaktiviert – stelle sicher, dass du zur Nutzung berechtigt bist."
+            )
         system = self.detect_system()
         logger.info("Detected system: %s", system)
         try:
@@ -381,7 +473,9 @@ class RatsinfoScraper:
                 items = self._fetch_generic(force=force)
             for item in items:
                 if not self._is_future_or_unknown_date(item.date):
-                    logger.debug("Item skipped (date in past): %s (%s)", item.title, item.date)
+                    logger.debug(
+                        "Item skipped (date in past): %s (%s)", item.title, item.date
+                    )
                     continue
                 if self._matches_keywords(item):
                     yield item
@@ -390,7 +484,9 @@ class RatsinfoScraper:
         except Exception as exc:
             logger.error("fetch_new_items failed: %s", exc)
 
-    def _fetch_and_parse(self, selectors: list, source_system: str, force: bool = False) -> Iterator[CouncilItem]:
+    def _fetch_and_parse(
+        self, selectors: list, source_system: str, force: bool = False
+    ) -> Iterator[CouncilItem]:
         soup = self._fetch_page(self.base_url)
         if soup is None:
             return
@@ -427,7 +523,9 @@ class RatsinfoScraper:
         soup = self._fetch_page(vorlagen_url)
         if soup is None:
             return
-        table = soup.find(class_="vorlagenübersicht") or soup.find(class_="vorlagenuebersicht")
+        table = soup.find(class_="vorlagenübersicht") or soup.find(
+            class_="vorlagenuebersicht"
+        )
         if table is None:
             # Fallback: search for vorgang links directly
             rows = soup.find_all("a", href=lambda h: h and "/vorgang/?__=" in h)
@@ -461,7 +559,11 @@ class RatsinfoScraper:
                     break
                 # Skip detail fetch for past items early (saves HTTP requests)
                 if date_str and not self._is_future_or_unknown_date(date_str):
-                    logger.debug("Sternberg item skipped early (past date): %s (%s)", title, date_str)
+                    logger.debug(
+                        "Sternberg item skipped early (past date): %s (%s)",
+                        title,
+                        date_str,
+                    )
                     continue
                 rate_limit_sleep()
                 item = self._parse_sternberg_item(item_id, title, url, date_str)
@@ -470,14 +572,18 @@ class RatsinfoScraper:
             except Exception as exc:
                 logger.warning("Error in Sternberg fetch: %s", exc)
 
-    def _parse_sternberg_item(self, item_id: str, title: str, url: str, date_str: str) -> Optional[CouncilItem]:
+    def _parse_sternberg_item(
+        self, item_id: str, title: str, url: str, date_str: str
+    ) -> Optional[CouncilItem]:
         detail_soup = self._fetch_page(url)
         body_text = ""
         pdf_texts = []
         pdf_urls = []
         if detail_soup:
             body_text = detail_soup.get_text(" ", strip=True)
-            for pdf_link in detail_soup.find_all("a", href=lambda h: h and "/sdnetrim/" in h):
+            for pdf_link in detail_soup.find_all(
+                "a", href=lambda h: h and "/sdnetrim/" in h
+            ):
                 pdf_url = urljoin(url, pdf_link["href"])
                 if not _is_safe_url(pdf_url):
                     continue
@@ -487,7 +593,9 @@ class RatsinfoScraper:
                     if text:
                         pdf_texts.append(text)
                 except Exception as exc:
-                    logger.warning("Sternberg PDF extraction failed %s: %s", pdf_url, exc)
+                    logger.warning(
+                        "Sternberg PDF extraction failed %s: %s", pdf_url, exc
+                    )
         return CouncilItem(
             id=item_id,
             title=title,
@@ -508,7 +616,10 @@ class RatsinfoScraper:
         for a in soup.find_all("a", href=True):
             try:
                 href = a["href"]
-                if not any(kw in href.lower() for kw in ["vorl", "antrag", "beschluss", "tagesord"]):
+                if not any(
+                    kw in href.lower()
+                    for kw in ["vorl", "antrag", "beschluss", "tagesord"]
+                ):
                     continue
                 url = urljoin(self.base_url, href)
                 if not _is_safe_url(url):
@@ -598,9 +709,14 @@ class RatsinfoScraper:
             logger.warning("pdfplumber not installed, skipping PDF extraction")
             return ""
         try:
-            resp = self.session.get(pdf_url, timeout=self.timeout)
-            resp.raise_for_status()
-            with pdfplumber.open(BytesIO(resp.content)) as pdf:
+            with self.session.get(pdf_url, timeout=self.timeout, stream=True) as resp:
+                resp.raise_for_status()
+                content_length = resp.headers.get("content-length")
+                if content_length and int(content_length) > 50 * 1024 * 1024:
+                    logger.warning("PDF too large (>50MB), skipping: %s", pdf_url)
+                    return ""
+                pdf_data = resp.content
+            with pdfplumber.open(BytesIO(pdf_data)) as pdf:
                 pages = pdf.pages[:max_pages]
                 texts = [p.extract_text() or "" for p in pages]
             return "\n".join(texts)
@@ -648,17 +764,19 @@ class RatsinfoScraper:
                 body_name = ""
                 if parent:
                     text = parent.get_text(" ", strip=True)
-                    date_match = re.search(r'\d{2}\.\d{2}\.\d{4}', text)
+                    date_match = re.search(r"\d{2}\.\d{2}\.\d{4}", text)
                     if date_match:
                         date_str = date_match.group(0)
                 session_id = self._build_item_id(url, title)
-                sessions.append(Session(
-                    id=session_id,
-                    title=title,
-                    date=date_str,
-                    url=url,
-                    body_name=body_name,
-                ))
+                sessions.append(
+                    Session(
+                        id=session_id,
+                        title=title,
+                        date=date_str,
+                        url=url,
+                        body_name=body_name,
+                    )
+                )
             except Exception as exc:
                 logger.warning("Error parsing Sternberg session: %s", exc)
         return sessions
@@ -668,9 +786,15 @@ class RatsinfoScraper:
         if soup is None:
             return []
         sessions = []
-        for a in soup.find_all("a", href=lambda h: h and any(
-            kw in h.lower() for kw in ["sitzung", "session", "tops", "gremien"]
-        )):
+        for a in soup.find_all(
+            "a",
+            href=lambda h: (
+                h
+                and any(
+                    kw in h.lower() for kw in ["sitzung", "session", "tops", "gremien"]
+                )
+            ),
+        ):
             try:
                 href = a["href"]
                 url = urljoin(self.base_url, href)
@@ -680,12 +804,14 @@ class RatsinfoScraper:
                 if not title or len(title) < 5:
                     continue
                 session_id = self._build_item_id(url, title)
-                sessions.append(Session(
-                    id=session_id,
-                    title=title,
-                    date="",
-                    url=url,
-                ))
+                sessions.append(
+                    Session(
+                        id=session_id,
+                        title=title,
+                        date="",
+                        url=url,
+                    )
+                )
             except Exception as exc:
                 logger.warning("Error parsing SessionNet session: %s", exc)
         return sessions

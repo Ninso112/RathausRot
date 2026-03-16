@@ -34,10 +34,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                 pass
 
         scrape_running = False
-        if self.scheduler_ref and hasattr(self.scheduler_ref, '_bot'):
+        if self.scheduler_ref and hasattr(self.scheduler_ref, "_bot"):
             bot = self.scheduler_ref._bot
-            if bot and hasattr(bot, '_command_handler'):
-                ch = bot._command_handler
+            if bot and hasattr(bot, "_command_handler_ref"):
+                ch = bot._command_handler_ref
                 if ch:
                     with ch._scrape_lock:
                         scrape_running = ch._scrape_running
@@ -45,6 +45,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         # version
         try:
             from rathausrot import __version__
+
             version = __version__
         except Exception:
             version = "unknown"
@@ -54,27 +55,29 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
         # next_run
         next_run = None
-        if self.scheduler_ref and hasattr(self.scheduler_ref, 'get_next_run_time'):
+        if self.scheduler_ref and hasattr(self.scheduler_ref, "get_next_run_time"):
             nr = self.scheduler_ref.get_next_run_time()
             if nr is not None:
                 next_run = nr.isoformat()
 
         # last_run_error
         last_run_error = None
-        if self.scheduler_ref and hasattr(self.scheduler_ref, '_history'):
+        if self.scheduler_ref and hasattr(self.scheduler_ref, "_history"):
             recent = self.scheduler_ref._history.get_recent(1)
             if recent and not recent[0]["success"]:
                 last_run_error = recent[0]["error_msg"] or None
 
-        body = json.dumps({
-            "status": "ok",
-            "version": version,
-            "uptime_seconds": uptime_seconds,
-            "last_run": last_run,
-            "next_run": next_run,
-            "scrape_running": scrape_running,
-            "last_run_error": last_run_error,
-        })
+        body = json.dumps(
+            {
+                "status": "ok",
+                "version": version,
+                "uptime_seconds": uptime_seconds,
+                "last_run": last_run,
+                "next_run": next_run,
+                "scrape_running": scrape_running,
+                "last_run_error": last_run_error,
+            }
+        )
 
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -85,11 +88,14 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         try:
             from rathausrot.scraper import CouncilItemStore
             from rathausrot.calendar_generator import generate_ics
+
             items = CouncilItemStore().get_all_as_items(limit=500)
             ics_data = generate_ics(items)
             self.send_response(200)
             self.send_header("Content-Type", "text/calendar; charset=utf-8")
-            self.send_header("Content-Disposition", 'attachment; filename="rathausrot.ics"')
+            self.send_header(
+                "Content-Disposition", 'attachment; filename="rathausrot.ics"'
+            )
             self.end_headers()
             self.wfile.write(ics_data)
         except Exception as exc:

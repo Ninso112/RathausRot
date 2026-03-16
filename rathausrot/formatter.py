@@ -37,11 +37,15 @@ class MatrixFormatter:
         city_name: str = "",
     ) -> List[str]:
         if source_url:
-            source_link = f' – <a href="{html.escape(source_url, quote=True)}">Ratsinfo</a>'
+            source_link = (
+                f' – <a href="{html.escape(source_url, quote=True)}">Ratsinfo</a>'
+            )
         else:
             source_link = ""
         city_prefix = f" [{html.escape(city_name)}]" if city_name else ""
-        header = f"<p>🔴 <strong>Neue Vorlage{city_prefix}</strong>{source_link}</p>\n<hr>\n"
+        header = (
+            f"<p>🔴 <strong>Neue Vorlage{city_prefix}</strong>{source_link}</p>\n<hr>\n"
+        )
         body = self.format_item(item, result)
         footer = self.format_footer()
         full_html = header + body + "\n<hr>\n" + footer
@@ -49,7 +53,9 @@ class MatrixFormatter:
 
     def format_header(self, kw: int, year: int, source_url: str = "") -> str:
         if source_url:
-            source_link = f' – <a href="{html.escape(source_url, quote=True)}">Ratsinfo</a>'
+            source_link = (
+                f' – <a href="{html.escape(source_url, quote=True)}">Ratsinfo</a>'
+            )
         else:
             source_link = ""
         return (
@@ -67,9 +73,10 @@ class MatrixFormatter:
             parts.append(f"<p><em>Datum: {html.escape(item.date)}</em></p>")
         if result:
             parts.append(f"<p>{html.escape(result.summary)}</p>")
-            if result.key_points:
+            key_points = result.key_points or []
+            if key_points:
                 kp_items = ""
-                for kp in result.key_points:
+                for kp in key_points:
                     if isinstance(kp, dict):
                         text = html.escape(kp.get("text", ""))
                         reason = kp.get("reason", "")
@@ -100,7 +107,7 @@ class MatrixFormatter:
         date_part = f" am {html.escape(session.date)}" if session.date else ""
         body_part = f" ({html.escape(session.body_name)})" if session.body_name else ""
         return (
-            f'<p>📅 <strong>Neue Sitzung:</strong> '
+            f"<p>📅 <strong>Neue Sitzung:</strong> "
             f'<a href="{safe_url}">{safe_title}</a>{body_part}{date_part}</p>'
         )
 

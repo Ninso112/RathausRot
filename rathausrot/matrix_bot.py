@@ -28,9 +28,11 @@ class MatrixBot:
             self.room_ids = []
         self._room_ids_set = set(self.room_ids)
         self._client = None
+        self._command_handler_ref = None
 
     def _new_client(self):
         import nio
+
         client = nio.AsyncClient(self.homeserver, self.username)
         client.access_token = self.access_token
         client.user_id = self.username
@@ -50,12 +52,15 @@ class MatrixBot:
 
         return asyncio.run(_login())
 
-    def send_message(self, html_content: str, room_ids: Optional[List[str]] = None) -> None:
+    def send_message(
+        self, html_content: str, room_ids: Optional[List[str]] = None
+    ) -> None:
         plain = strip_html(html_content)
         target_rooms = room_ids if room_ids is not None else self.room_ids
 
         async def _send_all():
             import nio
+
             client = self._new_client()
             try:
                 content = {
@@ -79,7 +84,9 @@ class MatrixBot:
 
         asyncio.run(_send_all())
 
-    def send_chunks(self, chunks: List[str], room_ids: Optional[List[str]] = None) -> None:
+    def send_chunks(
+        self, chunks: List[str], room_ids: Optional[List[str]] = None
+    ) -> None:
         for i, chunk in enumerate(chunks):
             logger.info("Sending chunk %d/%d", i + 1, len(chunks))
             if room_ids is not None:
@@ -89,10 +96,14 @@ class MatrixBot:
             if i < len(chunks) - 1:
                 time.sleep(1)
 
-    def send_bytes_as_file(self, data: bytes, filename: str, mimetype: str = "application/octet-stream") -> None:
+    def send_bytes_as_file(
+        self, data: bytes, filename: str, mimetype: str = "application/octet-stream"
+    ) -> None:
         """Upload raw bytes as a Matrix file message to all configured rooms."""
+
         async def _upload_and_send():
             import nio
+
             client = self._new_client()
             try:
                 up_resp, _ = await client.upload(
@@ -118,7 +129,9 @@ class MatrixBot:
                         content=content,
                     )
                     if isinstance(send_resp, nio.RoomSendError):
-                        logger.error("Failed to send file to %s: %s", room_id, send_resp)
+                        logger.error(
+                            "Failed to send file to %s: %s", room_id, send_resp
+                        )
                     else:
                         logger.info("File %s sent to %s", filename, room_id)
             finally:
@@ -144,45 +157,9 @@ class MatrixBot:
         try:
             resp = _requests.get(url, timeout=60)
             resp.raise_for_status()
-            data = resp.content
+            self.send_bytes_as_file(resp.content, filename, "application/pdf")
         except Exception as exc:
             logger.warning("Could not download file %s: %s", url, exc)
-            return
-
-        async def _upload_and_send():
-            import nio
-            client = self._new_client()
-            try:
-                up_resp, _ = await client.upload(
-                    data,
-                    content_type="application/pdf",
-                    filename=filename,
-                    filesize=len(data),
-                )
-                if isinstance(up_resp, nio.UploadError):
-                    logger.error("Matrix upload failed for %s: %s", filename, up_resp)
-                    return
-                mxc_url = up_resp.content_uri
-                content = {
-                    "msgtype": "m.file",
-                    "body": filename,
-                    "url": mxc_url,
-                    "info": {"mimetype": "application/pdf", "size": len(data)},
-                }
-                for room_id in self.room_ids:
-                    send_resp = await client.room_send(
-                        room_id=room_id,
-                        message_type="m.room.message",
-                        content=content,
-                    )
-                    if isinstance(send_resp, nio.RoomSendError):
-                        logger.error("Failed to send file to %s: %s", room_id, send_resp)
-                    else:
-                        logger.info("File %s sent to %s", filename, room_id)
-            finally:
-                await client.close()
-
-        asyncio.run(_upload_and_send())
 
     def close(self) -> None:
         pass  # send_message now creates a fresh client per call; nothing to close
@@ -205,6 +182,7 @@ class MatrixBot:
         client.user_id = self.username
 
         import time as _time
+
         startup_ts_ms = int(_time.time() * 1000)
 
         try:

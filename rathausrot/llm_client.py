@@ -1,10 +1,12 @@
+import asyncio
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
+import aiohttp
 import requests
 
 from rathausrot.utils import truncate_text
@@ -44,10 +46,14 @@ class OpenRouterClient:
 
     def __init__(self, config: dict):
         self.api_key = config.get("openrouter", {}).get("api_key", "")
-        self.model = config.get("openrouter", {}).get("model", "anthropic/claude-sonnet-4")
+        self.model = config.get("openrouter", {}).get(
+            "model", "anthropic/claude-sonnet-4"
+        )
         self.max_tokens = config.get("openrouter", {}).get("max_tokens", 1024)
         self.party = config.get("bot", {}).get("party", "")
-        self.custom_system_prompt = config.get("openrouter", {}).get("system_prompt", "")
+        self.custom_system_prompt = config.get("openrouter", {}).get(
+            "system_prompt", ""
+        )
 
     def analyze_item(self, item: CouncilItem) -> Optional[LLMResult]:
         try:
@@ -57,11 +63,18 @@ class OpenRouterClient:
                 return None
             result = self._parse_response(raw)
             return result
-        except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError, ValueError) as exc:
+        except (
+            requests.exceptions.RequestException,
+            json.JSONDecodeError,
+            KeyError,
+            ValueError,
+        ) as exc:
             logger.error("analyze_item failed for %s: %s", item.id, exc)
             return None
         except Exception as exc:
-            logger.error("analyze_item unexpected error for %s: %s", item.id, exc, exc_info=True)
+            logger.error(
+                "analyze_item unexpected error for %s: %s", item.id, exc, exc_info=True
+            )
             return None
 
     def _build_prompt(self, item: CouncilItem) -> Tuple[str, str]:
@@ -117,7 +130,9 @@ class OpenRouterClient:
                     retry_after = int(resp.headers.get("Retry-After", delay))
                     logger.warning(
                         "LLM rate limited (HTTP %d), waiting %ds (attempt %d)",
-                        resp.status_code, retry_after, attempt,
+                        resp.status_code,
+                        retry_after,
+                        attempt,
                     )
                     if attempt < len(delays):
                         time.sleep(retry_after)
@@ -129,7 +144,11 @@ class OpenRouterClient:
                 try:
                     content = data["choices"][0]["message"]["content"]
                 except (KeyError, IndexError, TypeError) as exc:
-                    logger.warning("Unexpected LLM response structure (attempt %d): %s", attempt, exc)
+                    logger.warning(
+                        "Unexpected LLM response structure (attempt %d): %s",
+                        attempt,
+                        exc,
+                    )
                     if attempt < len(delays):
                         time.sleep(delay)
                     continue
@@ -148,24 +167,24 @@ class OpenRouterClient:
         except json.JSONDecodeError:
             pass
         # Try ```json ... ``` code block
-        code_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        code_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
         if code_match:
             try:
                 return self._dict_to_result(json.loads(code_match.group(1)))
             except json.JSONDecodeError:
                 pass
         # Fallback: balanced brace extraction
-        start = text.find('{')
+        start = text.find("{")
         if start != -1:
             depth = 0
             for i, ch in enumerate(text[start:], start):
-                if ch == '{':
+                if ch == "{":
                     depth += 1
-                elif ch == '}':
+                elif ch == "}":
                     depth -= 1
                 if depth == 0:
                     try:
-                        return self._dict_to_result(json.loads(text[start:i + 1]))
+                        return self._dict_to_result(json.loads(text[start : i + 1]))
                     except json.JSONDecodeError:
                         break
         logger.warning("Could not parse LLM response as JSON, using defaults")
@@ -190,3 +209,82 @@ class OpenRouterClient:
             verdict_reason=data.get("verdict_reason", ""),
             relevance_score=max(1, min(5, score)),
         )
+
+    async def analyze_item_async(self, item: CouncilItem) -> Optional[LLMResult]:
+        """Async version of analyze_item for parallel execution."""
+        try:
+            system_prompt, user_prompt = self._build_prompt(item)
+            raw = await self._complete_async(system_prompt, user_prompt)
+            if not raw:
+                return None
+            return self._parse_response(raw)
+        except Exception as exc:
+            logger.error("analyze_item_async failed for %s: %s", item.id, exc)
+            return None
+
+    async def _complete_async(self, system: str, user: str) -> Optional[str]:
+        """Async version of _complete using aiohttp."""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": self.max_tokens,
+        }
+        delays = [5, 15, 45]
+        async with aiohttp.ClientSession() as session:
+            for attempt, delay in enumerate(delays, 1):
+                try:
+                    async with session.post(
+                        self.API_URL,
+                        headers=headers,
+                        json=payload,
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp:
+                        if resp.status in (429, 503):
+                            retry_after = int(resp.headers.get("Retry-After", delay))
+                            logger.warning(
+                                "LLM rate limited (HTTP %d), waiting %ds (attempt %d)",
+                                resp.status,
+                                retry_after,
+                                attempt,
+                            )
+                            if attempt < len(delays):
+                                await asyncio.sleep(retry_after)
+                            continue
+                        resp.raise_for_status()
+                        data = await resp.json()
+                        tokens = data.get("usage", {}).get("total_tokens", 0)
+                        logger.info("LLM tokens used: %d (attempt %d)", tokens, attempt)
+                        try:
+                            return data["choices"][0]["message"]["content"]
+                        except (KeyError, IndexError, TypeError) as exc:
+                            logger.warning("Unexpected LLM response structure: %s", exc)
+                            if attempt < len(delays):
+                                await asyncio.sleep(delay)
+                            continue
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    logger.warning(
+                        "LLM async request attempt %d failed: %s", attempt, exc
+                    )
+                    if attempt < len(delays):
+                        await asyncio.sleep(delay)
+        return None
+
+    async def analyze_items_batch_async(
+        self, items: List[CouncilItem], max_concurrent: int = 5
+    ) -> List[Optional[LLMResult]]:
+        """Analyze multiple items in parallel with concurrency limit."""
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def analyze_with_limit(item: CouncilItem) -> Optional[LLMResult]:
+            async with semaphore:
+                return await self.analyze_item_async(item)
+
+        tasks = [analyze_with_limit(item) for item in items]
+        return await asyncio.gather(*tasks)
