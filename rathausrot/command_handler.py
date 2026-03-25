@@ -19,6 +19,7 @@ HELP_TEXT = (
     "<li><code>!verlauf</code> – Letzte Scrape-Läufe anzeigen</li>"
     "<li><code>!nächste</code> – Nächsten geplanten Lauf anzeigen</li>"
     "<li><code>!statistik</code> – Scrape-Statistiken anzeigen</li>"
+    "<li><code>!guthaben</code> – OpenRouter-Guthaben abfragen</li>"
     "<li><code>!stat</code> – Systemauslastung (CPU, RAM, Disk, Uptime)</li>"
     "<li><code>!log [level] [anzahl]</code> – Bot-Logs anzeigen</li>"
     "<li><code>!config</code> – Aktuelle Konfiguration anzeigen</li>"
@@ -62,6 +63,8 @@ class CommandHandler:
             "!log": self._cmd_log,
             "!version": self._cmd_version,
             "!config": self._cmd_config,
+            "!guthaben": self._cmd_guthaben,
+            "!credits": self._cmd_guthaben,
             "!stop": self._cmd_stop,
         }
 
@@ -91,7 +94,7 @@ class CommandHandler:
         try:
             return self._commands[cmd](sender, body)
         except Exception as exc:
-            logger.error("Error executing command '%s': %s", cmd, exc)
+            logger.error("Error executing command '%s': %s", cmd, exc, exc_info=True)
             return f"<p>❌ Fehler beim Ausführen von <code>{html.escape(cmd)}</code>: {html.escape(str(exc))}</p>"
 
     # ------------------------------------------------------------------ #
@@ -112,6 +115,8 @@ class CommandHandler:
             def run():
                 try:
                     self.scheduler_ref.run_pipeline(force=True)
+                except Exception as exc:
+                    logger.error("Manual scrape failed: %s", exc, exc_info=True)
                 finally:
                     with self._scrape_lock:
                         self._scrape_running = False
@@ -173,7 +178,7 @@ class CommandHandler:
     def _cmd_abbruch(self, sender: str, body: str) -> str:
         with self._scrape_lock:
             running = self._scrape_running
-        if not running:
+        if not running and not self.scheduler_ref.get_pipeline_progress().get("running", False):
             return "<p>ℹ️ Kein Scrape läuft gerade.</p>"
         self.scheduler_ref.cancel_pipeline()
         return "<p>🛑 Abbruch angefordert – das aktuelle Item wird noch fertig verarbeitet.</p>"
@@ -280,7 +285,7 @@ class CommandHandler:
             )
 
         # CPU
-        cpu_percent = psutil.cpu_percent(interval=1)
+        cpu_percent = psutil.cpu_percent(interval=0.1)
         cpu_count = psutil.cpu_count(logical=True)
         cpu_freq = psutil.cpu_freq()
         cpu_freq_str = f"{cpu_freq.current:.0f} MHz" if cpu_freq else "–"
@@ -399,7 +404,10 @@ class CommandHandler:
             if len(chunks) > 1:
 
                 def send():
-                    self._send_extra(chunks[1:])
+                    try:
+                        self._send_extra(chunks[1:])
+                    except Exception as exc:
+                        logger.error("Failed to send log chunks: %s", exc)
 
                 thread = threading.Thread(target=send, daemon=True, name="send-logs")
                 thread.start()
@@ -438,6 +446,29 @@ class CommandHandler:
             f"<li><strong>Schlüsselwörter:</strong> {keywords_str}</li>"
             f"<li><strong>Erlaubte Nutzer:</strong> {allowed_str}</li>"
             "</ul>"
+        )
+
+    def _cmd_guthaben(self, sender: str, body: str) -> str:
+        from rathausrot.llm_client import OpenRouterClient
+
+        client = OpenRouterClient(self.config)
+        credits = client.get_credits()
+        if credits is None:
+            return (
+                "<p>❌ Guthaben konnte nicht abgefragt werden.</p>"
+                "<p><em>Hinweis: Eventuell wird ein Management-API-Key benötigt.</em></p>"
+            )
+        balance = credits["balance"]
+        total = credits["total_credits"]
+        usage = credits["total_usage"]
+        icon = "✅" if balance > 1.0 else ("⚠️" if balance > 0 else "❌")
+        return (
+            f"<p><strong>💰 OpenRouter-Guthaben</strong></p>"
+            f"<ul>"
+            f"<li><strong>Restguthaben:</strong> {icon} ${balance:.2f}</li>"
+            f"<li><strong>Verbraucht:</strong> ${usage:.2f}</li>"
+            f"<li><strong>Gesamt eingezahlt:</strong> ${total:.2f}</li>"
+            f"</ul>"
         )
 
     def _cmd_stop(self, sender: str, body: str) -> str:

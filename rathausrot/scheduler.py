@@ -15,8 +15,10 @@ from rathausrot.scraper import (
     LLMCache,
     RetryQueue,
     CouncilItemStore,
+    DatabaseManager,
+    DuplicateTracker,
 )
-from rathausrot.llm_client import OpenRouterClient, LLMResult
+from rathausrot.llm_client import OpenRouterClient, LLMResult, InsufficientCreditsError
 from rathausrot.formatter import MatrixFormatter
 from rathausrot.matrix_bot import MatrixBot
 from rathausrot.command_handler import CommandHandler
@@ -58,8 +60,6 @@ class BotScheduler:
 
     def run_pipeline(self, force: bool = False) -> None:
         logger.info("Starting pipeline run (force=%s)", force)
-        import copy
-
         item_count = 0
         self._cancel_event.clear()
         with self._progress_lock:
@@ -79,7 +79,7 @@ class BotScheduler:
             send_pdfs = self.config.get("bot", {}).get("send_pdf_attachments", False)
 
             # Process retry queue first (global, no city context)
-            retry_scraper = RatsinfoScraper(self.config)
+            retry_tracker = DuplicateTracker()
             source_url_global = self.config.get("scraper", {}).get("ratsinfo_url", "")
             for item in self._retry_queue.get_pending():
                 logger.info("Retrying item from queue: %s", item.title)
@@ -93,7 +93,7 @@ class BotScheduler:
                     logger.debug(
                         "Retry item skipped by relevance threshold: %s", item.title
                     )
-                    retry_scraper.tracker.mark_processed(item.id)
+                    retry_tracker.mark_processed(item.id)
                     continue
                 self._send_item_report(
                     item,
@@ -103,7 +103,7 @@ class BotScheduler:
                     self._bot.room_ids if self._bot else [],
                 )
                 item_count += 1
-                retry_scraper.tracker.mark_processed(item.id)
+                retry_tracker.mark_processed(item.id)
 
             # Process each city
             cities = get_cities_from_config(self.config)
@@ -122,7 +122,11 @@ class BotScheduler:
                 )
 
                 # Build per-city config (override scraper URL and keywords)
-                city_config = copy.deepcopy(self.config)
+                city_config = {
+                    **self.config,
+                    "scraper": {**self.config.get("scraper", {})},
+                    "openrouter": {**self.config.get("openrouter", {})},
+                }
                 city_config["scraper"]["ratsinfo_url"] = source_url
                 city_config["scraper"]["keywords"] = city.get("keywords", [])
                 if city.get("system_prompt"):
@@ -170,7 +174,8 @@ class BotScheduler:
                             self._llm_cache.put(item.id, result)
                     else:
                         result = llm_client.analyze_item(item)
-                        self._llm_cache.put(item.id, result)
+                        if result is not None:
+                            self._llm_cache.put(item.id, result)
                     if result is None:
                         logger.warning(
                             "LLM analysis failed, adding to retry queue: %s", item.id
@@ -193,12 +198,27 @@ class BotScheduler:
                     with self._progress_lock:
                         self._pipeline_progress["items_done"] += 1
 
+                scraper.close()
+
             if item_count == 0:
                 logger.info("No new items found")
 
             self._update_last_run()
             self._history.record_run(item_count, True)
             logger.info("Pipeline completed: %d items processed", item_count)
+        except InsufficientCreditsError as exc:
+            logger.error("Credits exhausted: %s", exc)
+            self._history.record_run(item_count, False, str(exc))
+            if self._bot is not None:
+                try:
+                    self._bot.send_message(
+                        "<p>⚠️ <strong>OpenRouter-Guthaben aufgebraucht!</strong></p>"
+                        "<p>Die Pipeline wurde gestoppt, da keine Credits mehr vorhanden sind. "
+                        "Bitte lade dein Guthaben auf: "
+                        '<a href="https://openrouter.ai/credits">openrouter.ai/credits</a></p>'
+                    )
+                except Exception as send_exc:
+                    logger.error("Could not send credit warning: %s", send_exc)
         except Exception as exc:
             logger.error("Pipeline error: %s", exc, exc_info=True)
             self._history.record_run(item_count, False, str(exc))
@@ -259,15 +279,21 @@ class BotScheduler:
         )
         self._bot.start_command_listener(command_handler)
 
-        if run_now or self._should_run_on_startup():
-            logger.info("Running pipeline immediately")
-            self.run_pipeline()
+        try:
+            if run_now or self._should_run_on_startup():
+                logger.info("Running pipeline immediately")
+                self.run_pipeline()
 
-        self._setup_schedule()
+            self._setup_schedule()
 
-        while not self._stop_event.is_set():
-            schedule.run_pending()
-            self._stop_event.wait(timeout=10)
+            while not self._stop_event.is_set():
+                schedule.run_pending()
+                self._stop_event.wait(timeout=10)
+        finally:
+            logger.info("Scheduler shutting down, closing resources")
+            if self._bot is not None:
+                self._bot.close()
+            DatabaseManager.close_all()
 
     def stop(self) -> None:
         """Signal the scheduler loop to exit."""

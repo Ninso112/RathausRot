@@ -377,6 +377,17 @@ class RatsinfoScraper:
         self.session.mount("https://", adapter)
         self._detected_system: Optional[str] = None
 
+    def close(self):
+        """Close the HTTP session and release connection pool resources."""
+        self.session.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
     def _is_future_or_unknown_date(self, date_str: str) -> bool:
         """Return True if item date is in the future or cannot be parsed (safe default)."""
         if not date_str:
@@ -416,7 +427,7 @@ class RatsinfoScraper:
                 self._detected_system = "allris"
             else:
                 self._detected_system = "unknown"
-        except Exception as exc:
+        except (requests.RequestException, ValueError, AttributeError) as exc:
             logger.warning("detect_system error: %s", exc)
             self._detected_system = "unknown"
         return self._detected_system
@@ -555,8 +566,8 @@ class RatsinfoScraper:
                         date_str = tops_link.get_text(strip=True)
                 item_id = self._build_item_id(url, title)
                 if not force and not self.tracker.is_new(item_id):
-                    logger.debug("Stopping at known Sternberg item: %s", title)
-                    break
+                    logger.debug("Skipping known Sternberg item: %s", title)
+                    continue
                 # Skip detail fetch for past items early (saves HTTP requests)
                 if date_str and not self._is_future_or_unknown_date(date_str):
                     logger.debug(
@@ -821,10 +832,15 @@ class RatsinfoScraper:
             parsed = urlparse(url)
             robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
             resp = self.session.get(robots_url, timeout=self.timeout)
+            if resp.status_code == 404:
+                return True  # No robots.txt → everything allowed
             resp.raise_for_status()
             rp = RobotFileParser()
             rp.parse(resp.text.splitlines())
             return rp.can_fetch(RATSINFO_USER_AGENT, url)
-        except Exception as exc:
-            logger.warning("robots.txt check failed: %s", exc)
-            return True  # Assume allowed on error
+        except requests.RequestException as exc:
+            logger.warning("robots.txt fetch failed (assuming allowed): %s", exc)
+            return True
+        except (ValueError, TypeError) as exc:
+            logger.warning("robots.txt parse error (blocking to be safe): %s", exc)
+            return False

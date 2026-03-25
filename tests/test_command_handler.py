@@ -22,6 +22,7 @@ def make_handler(**config_overrides):
     scheduler._history.get_recent.return_value = []
     scheduler.get_next_run_time.return_value = None
     scheduler.get_last_report_chunks.return_value = []
+    scheduler.get_pipeline_progress.return_value = {"running": False}
     return CommandHandler(config, scheduler)
 
 

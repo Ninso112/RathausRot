@@ -14,6 +14,10 @@ from rathausrot.scraper import CouncilItem
 
 logger = logging.getLogger(__name__)
 
+
+class InsufficientCreditsError(Exception):
+    """Raised when OpenRouter returns HTTP 402 (no credits remaining)."""
+
 SYSTEM_PROMPT_DISCLAIMER = (
     "Hinweis: Diese Einschätzungen sind automatisch generierte Prognosen und stellen "
     "keine offiziellen Positionen der Partei dar."
@@ -63,6 +67,8 @@ class OpenRouterClient:
                 return None
             result = self._parse_response(raw)
             return result
+        except InsufficientCreditsError:
+            raise
         except (
             requests.exceptions.RequestException,
             json.JSONDecodeError,
@@ -126,6 +132,11 @@ class OpenRouterClient:
                 resp = requests.post(
                     self.API_URL, headers=headers, json=payload, timeout=60
                 )
+                if resp.status_code == 402:
+                    logger.error("OpenRouter credits exhausted (HTTP 402)")
+                    raise InsufficientCreditsError(
+                        "OpenRouter-Guthaben aufgebraucht (HTTP 402). Bitte Credits aufladen."
+                    )
                 if resp.status_code in (429, 503):
                     retry_after = int(resp.headers.get("Retry-After", delay))
                     logger.warning(
@@ -210,6 +221,27 @@ class OpenRouterClient:
             relevance_score=max(1, min(5, score)),
         )
 
+    def get_credits(self) -> Optional[dict]:
+        """Fetch current OpenRouter credit balance."""
+        try:
+            resp = requests.get(
+                "https://openrouter.ai/api/v1/credits",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            total = data.get("total_credits", 0.0)
+            usage = data.get("total_usage", 0.0)
+            return {
+                "total_credits": total,
+                "total_usage": usage,
+                "balance": total - usage,
+            }
+        except requests.exceptions.RequestException as exc:
+            logger.warning("Failed to fetch OpenRouter credits: %s", exc)
+            return None
+
     async def analyze_item_async(self, item: CouncilItem) -> Optional[LLMResult]:
         """Async version of analyze_item for parallel execution."""
         try:
@@ -218,8 +250,20 @@ class OpenRouterClient:
             if not raw:
                 return None
             return self._parse_response(raw)
-        except Exception as exc:
+        except InsufficientCreditsError:
+            raise
+        except (
+            aiohttp.ClientError,
+            json.JSONDecodeError,
+            KeyError,
+            ValueError,
+        ) as exc:
             logger.error("analyze_item_async failed for %s: %s", item.id, exc)
+            return None
+        except Exception as exc:
+            logger.error(
+                "analyze_item_async unexpected error for %s: %s", item.id, exc, exc_info=True
+            )
             return None
 
     async def _complete_async(self, system: str, user: str) -> Optional[str]:
@@ -246,6 +290,11 @@ class OpenRouterClient:
                         json=payload,
                         timeout=aiohttp.ClientTimeout(total=60),
                     ) as resp:
+                        if resp.status == 402:
+                            logger.error("OpenRouter credits exhausted (HTTP 402)")
+                            raise InsufficientCreditsError(
+                                "OpenRouter-Guthaben aufgebraucht (HTTP 402). Bitte Credits aufladen."
+                            )
                         if resp.status in (429, 503):
                             retry_after = int(resp.headers.get("Retry-After", delay))
                             logger.warning(
