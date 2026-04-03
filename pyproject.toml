@@ -7,7 +7,7 @@ name = "rathausrot"
 version = "0.1.0"
 description = "Kommunalpolitik-Bot für Matrix – automatische Analyse von Ratssitzungen"
 license = "GPL-3.0-only"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 dependencies = [
     "matrix-nio[e2e]>=0.21.0,<1.0",
     "requests>=2.31.0,<3.0",
@@ -24,6 +24,7 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "ruff>=0.8.0",
 ]
 
 [project.scripts]
@@ -32,6 +33,26 @@ rathausrot = "rathausrot.main:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --tb=short"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "UP", "N", "B", "SIM", "C4"]
+ignore = [
+    "E501",    # line-length – durch ruff format abgedeckt
+    "N818",    # exception naming
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["N806", "F841", "SIM117", "B023"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rathausrot"]
+
+[tool.setuptools.package-data]
+rathausrot = ["py.typed"]
 
 [tool.setuptools.packages.find]
 include = ["rathausrot*"]

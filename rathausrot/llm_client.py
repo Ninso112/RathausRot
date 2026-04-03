@@ -3,7 +3,6 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
 
 import requests
 
@@ -15,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class InsufficientCreditsError(Exception):
     """Raised when OpenRouter returns HTTP 402 (no credits remaining)."""
+
 
 SYSTEM_PROMPT_DISCLAIMER = (
     "Hinweis: Diese Einschätzungen sind automatisch generierte Prognosen und stellen "
@@ -57,7 +57,7 @@ class OpenRouterClient:
             "system_prompt", ""
         )
 
-    def analyze_item(self, item: CouncilItem) -> Optional[LLMResult]:
+    def analyze_item(self, item: CouncilItem) -> LLMResult | None:
         try:
             system_prompt, user_prompt = self._build_prompt(item)
             raw, tokens = self._complete(system_prompt, user_prompt)
@@ -82,7 +82,7 @@ class OpenRouterClient:
             )
             return None
 
-    def _build_prompt(self, item: CouncilItem) -> Tuple[str, str]:
+    def _build_prompt(self, item: CouncilItem) -> tuple[str, str]:
         if self.custom_system_prompt:
             system = self.custom_system_prompt
         else:
@@ -112,7 +112,7 @@ class OpenRouterClient:
         )
         return system, user
 
-    def _complete(self, system: str, user: str) -> Optional[str]:
+    def _complete(self, system: str, user: str) -> str | None:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -154,9 +154,7 @@ class OpenRouterClient:
                 try:
                     content = data["choices"][0]["message"]["content"]
                 except (KeyError, IndexError, TypeError) as exc:
-                    logger.warning(
-                        "Unexpected LLM response structure: %s", exc
-                    )
+                    logger.warning("Unexpected LLM response structure: %s", exc)
                     break  # Non-transient – retrying won't help
                 return content, tokens
             except (requests.exceptions.RequestException, TimeoutError) as exc:
@@ -217,7 +215,7 @@ class OpenRouterClient:
             relevance_score=max(1, min(5, score)),
         )
 
-    def get_credits(self) -> Optional[dict]:
+    def get_credits(self) -> dict | None:
         """Fetch current OpenRouter credit balance."""
         try:
             resp = requests.get(
@@ -237,4 +235,3 @@ class OpenRouterClient:
         except requests.exceptions.RequestException as exc:
             logger.warning("Failed to fetch OpenRouter credits: %s", exc)
             return None
-

@@ -1,6 +1,5 @@
 import logging
 from datetime import timedelta
-from typing import List
 
 from rathausrot.models import CouncilItem
 from rathausrot.utils import parse_german_date
@@ -8,12 +7,14 @@ from rathausrot.utils import parse_german_date
 logger = logging.getLogger(__name__)
 
 
-def generate_ics(items: List[CouncilItem]) -> bytes:
+def generate_ics(items: list[CouncilItem]) -> bytes:
     """Generate an ICS calendar file from a list of CouncilItems."""
     try:
         from icalendar import Calendar, Event
-    except ImportError:
-        raise ImportError("icalendar package required: pip install 'icalendar>=5.0'")
+    except ImportError as exc:
+        raise ImportError(
+            "icalendar package required: pip install 'icalendar>=5.0'"
+        ) from exc
 
     cal = Calendar()
     cal.add("prodid", "-//RathausRot//DE")

@@ -1,13 +1,12 @@
 import json
 import socket
-import threading
 import time
 from http.client import HTTPConnection
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from rathausrot.healthcheck import HealthCheckHandler, start_healthcheck
+from rathausrot.healthcheck import start_healthcheck
 
 
 def _wait_for_server(port, timeout=5.0):

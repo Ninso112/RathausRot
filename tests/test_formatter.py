@@ -1,4 +1,3 @@
-import pytest
 from rathausrot.formatter import MatrixFormatter, VERDICT_EMOJI
 from rathausrot.scraper import CouncilItem
 from rathausrot.llm_client import LLMResult
@@ -49,8 +48,10 @@ def test_chunk_html_splits_large_input():
     # Generate ~130KB of HTML
     large_html = ""
     for i in range(500):
-        large_html += f"<p>Dies ist Paragraph Nummer {i} mit etwas mehr Text um die Größe zu erhöhen. " \
-                      f"Mehr Inhalt hier für Paragraph {i}.</p>\n"
+        large_html += (
+            f"<p>Dies ist Paragraph Nummer {i} mit etwas mehr Text um die Größe zu erhöhen. "
+            f"Mehr Inhalt hier für Paragraph {i}.</p>\n"
+        )
 
     chunks = chunk_html(large_html, max_bytes=60000)
     assert len(chunks) > 1
@@ -62,14 +63,18 @@ def test_single_item_report_contains_disclaimer():
     formatter = MatrixFormatter()
     item = make_item()
     result = make_result()
-    chunks = formatter.format_single_item_report(item, result, source_url="https://example.com")
+    chunks = formatter.format_single_item_report(
+        item, result, source_url="https://example.com"
+    )
     combined = "".join(chunks)
     assert "automatisch generierte Prognosen" in combined
 
 
 def test_format_item_xss_in_title():
     formatter = MatrixFormatter()
-    item = make_item(title='<script>alert("xss")</script>', url="https://example.com/safe")
+    item = make_item(
+        title='<script>alert("xss")</script>', url="https://example.com/safe"
+    )
     result = make_result()
     html = formatter.format_item(item, result)
     assert "<script>" not in html
@@ -78,7 +83,9 @@ def test_format_item_xss_in_title():
 
 def test_format_item_xss_in_url():
     formatter = MatrixFormatter()
-    item = make_item(title="Safe Title", url='https://example.com/"><script>alert(1)</script>')
+    item = make_item(
+        title="Safe Title", url='https://example.com/"><script>alert(1)</script>'
+    )
     result = make_result()
     html = formatter.format_item(item, result)
     assert "<script>" not in html
@@ -88,9 +95,9 @@ def test_format_item_xss_in_llm_output():
     formatter = MatrixFormatter()
     item = make_item()
     result = LLMResult(
-        summary='<img src=x onerror=alert(1)>',
-        key_points=['<script>xss</script>'],
-        verdict='<b>Zustimmung</b>',
+        summary="<img src=x onerror=alert(1)>",
+        key_points=["<script>xss</script>"],
+        verdict="<b>Zustimmung</b>",
         verdict_reason='<a href="javascript:alert(1)">click</a>',
         relevance_score=3,
     )
@@ -109,6 +116,7 @@ def test_format_item_absolute_url():
     html = formatter.format_item(item, result)
     # URL in href must be absolute (start with https://)
     import re
+
     hrefs = re.findall(r'href="([^"]+)"', html)
     for href in hrefs:
         assert href.startswith("http"), f"Non-absolute URL found: {href}"

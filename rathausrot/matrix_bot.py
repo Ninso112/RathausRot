@@ -2,7 +2,6 @@ import asyncio
 import logging
 import threading
 import time
-from typing import List, Optional
 
 import requests as _requests
 
@@ -30,8 +29,8 @@ class MatrixBot:
         self._client = None
         self._command_handler_ref = None
         # Persistent event loop for sending messages
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._loop_thread: Optional[threading.Thread] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
         self._send_client = None
         self._send_lock = threading.Lock()
 
@@ -100,7 +99,7 @@ class MatrixBot:
         return asyncio.run(_login())
 
     def send_message(
-        self, html_content: str, room_ids: Optional[List[str]] = None
+        self, html_content: str, room_ids: list[str] | None = None
     ) -> None:
         plain = strip_html(html_content)
         target_rooms = room_ids if room_ids is not None else self.room_ids
@@ -128,9 +127,7 @@ class MatrixBot:
 
         self._run_async(_send_all())
 
-    def send_chunks(
-        self, chunks: List[str], room_ids: Optional[List[str]] = None
-    ) -> None:
+    def send_chunks(self, chunks: list[str], room_ids: list[str] | None = None) -> None:
         for i, chunk in enumerate(chunks):
             logger.info("Sending chunk %d/%d", i + 1, len(chunks))
             if room_ids is not None:
@@ -145,7 +142,7 @@ class MatrixBot:
         data: bytes,
         filename: str,
         mimetype: str = "application/octet-stream",
-        room_ids: Optional[List[str]] = None,
+        room_ids: list[str] | None = None,
     ) -> None:
         """Upload raw bytes as a Matrix file message to the specified (or all configured) rooms."""
         target_rooms = room_ids if room_ids is not None else self.room_ids
@@ -177,9 +174,7 @@ class MatrixBot:
                     content=content,
                 )
                 if isinstance(send_resp, nio.RoomSendError):
-                    logger.error(
-                        "Failed to send file to %s: %s", room_id, send_resp
-                    )
+                    logger.error("Failed to send file to %s: %s", room_id, send_resp)
                 else:
                     logger.info("File %s sent to %s", filename, room_id)
 
@@ -199,7 +194,7 @@ class MatrixBot:
         )
 
     def send_file(
-        self, url: str, filename: str, room_ids: Optional[List[str]] = None
+        self, url: str, filename: str, room_ids: list[str] | None = None
     ) -> None:
         """Download a file from *url* and upload it to Matrix rooms as m.file."""
         try:

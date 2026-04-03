@@ -33,10 +33,7 @@ def print_banner() -> None:
 
 
 def prompt(question: str, default: str = "", secret: bool = False) -> str:
-    if default:
-        display_question = f"{question} [{default}]: "
-    else:
-        display_question = f"{question}: "
+    display_question = f"{question} [{default}]: " if default else f"{question}: "
     if secret:
         value = getpass.getpass(display_question)
     else:
@@ -49,13 +46,14 @@ def prompt(question: str, default: str = "", secret: bool = False) -> str:
 def _do_matrix_login(homeserver: str, username: str) -> str:
     """Interactively log in to Matrix and return the access token."""
     while True:
-        password = prompt("Matrix Passwort", secret=True)
+        pw = prompt("Matrix Passwort", secret=True)
         print(colored("\nVersuche Login...", Colors.YELLOW))
         try:
             import asyncio
+
             import nio
 
-            async def do_login():
+            async def _do_login(password=pw):
                 client = nio.AsyncClient(homeserver, username)
                 resp = await client.login(password)
                 await client.close()
@@ -63,7 +61,7 @@ def _do_matrix_login(homeserver: str, username: str) -> str:
                     return resp.access_token
                 raise RuntimeError(f"Login fehlgeschlagen: {resp}")
 
-            token = asyncio.run(do_login())
+            token = asyncio.run(_do_login())
             print(colored("✓ Login erfolgreich!", Colors.GREEN))
             return token
         except Exception as exc:
@@ -146,12 +144,16 @@ def run_wizard(config_manager) -> None:
     print(f"  Raum-ID:              {room_id}")
     print(f"  Modell:               {model}")
     print(f"  Ratsinfo URL:         {ratsinfo_url}")
-    print(f"  robots.txt:           {'respektieren' if respect_robots_txt else 'ignorieren'}")
+    print(
+        f"  robots.txt:           {'respektieren' if respect_robots_txt else 'ignorieren'}"
+    )
     print(f"  Intervall:            {interval_minutes} min")
     print(f"  Partei:               {party}")
     print(f"  Relevanz-Schwelle:    {relevance_threshold}")
     print(f"  Schlüsselwörter:      {', '.join(keywords) if keywords else '(alle)'}")
-    print(f"  Erlaubte Nutzer:      {', '.join(allowed_users) if allowed_users else '(alle)'}")
+    print(
+        f"  Erlaubte Nutzer:      {', '.join(allowed_users) if allowed_users else '(alle)'}"
+    )
     print(f"  PDF-Anhänge senden:   {'ja' if send_pdf_attachments else 'nein'}")
     print(f"  API Key:              {'*' * min(len(api_key), 8)}...")
     print(f"  Access Token:         {'*' * 8}...")
@@ -185,7 +187,9 @@ def run_edit_wizard(config_manager) -> None:
     username = prompt("Benutzername", m.get("username", ""))
 
     cur_token = m.get("access_token", "")
-    token_hint = f"{'*' * 8}... (Enter = behalten)" if cur_token else "(noch nicht gesetzt)"
+    token_hint = (
+        f"{'*' * 8}... (Enter = behalten)" if cur_token else "(noch nicht gesetzt)"
+    )
     print(f"Access Token: {token_hint}")
     relogin = input("Neu einloggen und Token erneuern? [j/N]: ").strip().lower()
     if relogin == "j":
@@ -198,7 +202,11 @@ def run_edit_wizard(config_manager) -> None:
     # OpenRouter
     print(colored("\n── OpenRouter ──────────────────────────", Colors.YELLOW))
     cur_key = o.get("api_key", "")
-    key_hint = f"{'*' * min(len(cur_key), 8)}... (Enter = behalten)" if cur_key else "(noch nicht gesetzt)"
+    key_hint = (
+        f"{'*' * min(len(cur_key), 8)}... (Enter = behalten)"
+        if cur_key
+        else "(noch nicht gesetzt)"
+    )
     print(f"API Key: {key_hint}")
     new_key = getpass.getpass("Neuer API Key (Enter = behalten): ").strip()
     api_key = new_key if new_key else cur_key
@@ -213,25 +221,35 @@ def run_edit_wizard(config_manager) -> None:
 
     # Bot
     print(colored("\n── Bot ─────────────────────────────────", Colors.YELLOW))
-    interval_str = prompt("Abruf-Intervall in Minuten", str(b.get("interval_minutes", 360)))
+    interval_str = prompt(
+        "Abruf-Intervall in Minuten", str(b.get("interval_minutes", 360))
+    )
     try:
         interval_minutes = int(interval_str)
     except ValueError:
         interval_minutes = b.get("interval_minutes", 360)
     party = prompt("Partei", b.get("party", "Die Linke"))
-    relevance_str = prompt("Relevanz-Schwellenwert (1–5)", str(b.get("relevance_threshold", 1)))
+    relevance_str = prompt(
+        "Relevanz-Schwellenwert (1–5)", str(b.get("relevance_threshold", 1))
+    )
     try:
         relevance_threshold = max(1, min(5, int(relevance_str)))
     except ValueError:
         relevance_threshold = b.get("relevance_threshold", 1)
     cur_keywords = ", ".join(s.get("keywords", []))
-    keywords_input = prompt("Schlüsselwörter (kommasepariert, leer = alle)", cur_keywords)
+    keywords_input = prompt(
+        "Schlüsselwörter (kommasepariert, leer = alle)", cur_keywords
+    )
     keywords = [kw.strip() for kw in keywords_input.split(",") if kw.strip()]
     cur_allowed = ", ".join(b.get("allowed_users", []))
-    allowed_input = prompt("Erlaubte Matrix-IDs (kommasepariert, leer = alle)", cur_allowed)
+    allowed_input = prompt(
+        "Erlaubte Matrix-IDs (kommasepariert, leer = alle)", cur_allowed
+    )
     allowed_users = [u.strip() for u in allowed_input.split(",") if u.strip()]
     cur_pdf = "j" if b.get("send_pdf_attachments", False) else "n"
-    pdf_input = prompt("PDF-Anhänge als Dateien in Matrix senden? (j/n)", cur_pdf).lower()
+    pdf_input = prompt(
+        "PDF-Anhänge als Dateien in Matrix senden? (j/n)", cur_pdf
+    ).lower()
     send_pdf_attachments = pdf_input == "j"
 
     # Merge into existing config

@@ -1,14 +1,18 @@
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
 
-from rathausrot.llm_client import OpenRouterClient, LLMResult
+from rathausrot.llm_client import OpenRouterClient
 
 
 def make_client(**overrides):
     config = {
-        "openrouter": {"api_key": "test-key", "model": "test-model", "max_tokens": 100, "system_prompt": ""},
+        "openrouter": {
+            "api_key": "test-key",
+            "model": "test-model",
+            "max_tokens": 100,
+            "system_prompt": "",
+        },
         "bot": {"party": "TestPartei"},
     }
     config.update(overrides)
@@ -105,14 +109,14 @@ class TestComplete:
         bad_resp.json.return_value = {"error": "bad"}  # no choices key
         bad_resp.raise_for_status = MagicMock()
 
-        with patch("requests.post", return_value=bad_resp):
-            with patch("time.sleep"):
-                result, tokens = client._complete("system", "user")
+        with patch("requests.post", return_value=bad_resp), patch("time.sleep"):
+            result, tokens = client._complete("system", "user")
         assert result is None
         assert tokens == 0
 
     def test_request_exception_retries(self):
         import requests as req
+
         client = make_client()
 
         with patch("requests.post", side_effect=req.exceptions.Timeout("timeout")):
@@ -126,18 +130,38 @@ class TestCustomSystemPrompt:
     def test_default_prompt(self):
         client = make_client()
         from rathausrot.scraper import CouncilItem
-        item = CouncilItem(id="x", title="T", url="http://x", item_type="item",
-                           date="", body_text="body", source_system="test")
+
+        item = CouncilItem(
+            id="x",
+            title="T",
+            url="http://x",
+            item_type="item",
+            date="",
+            body_text="body",
+            source_system="test",
+        )
         system, user = client._build_prompt(item)
         assert "TestPartei" in system
 
     def test_custom_prompt(self):
-        client = make_client(openrouter={
-            "api_key": "k", "model": "m", "max_tokens": 100,
-            "system_prompt": "Custom prompt here"
-        })
+        client = make_client(
+            openrouter={
+                "api_key": "k",
+                "model": "m",
+                "max_tokens": 100,
+                "system_prompt": "Custom prompt here",
+            }
+        )
         from rathausrot.scraper import CouncilItem
-        item = CouncilItem(id="x", title="T", url="http://x", item_type="item",
-                           date="", body_text="body", source_system="test")
+
+        item = CouncilItem(
+            id="x",
+            title="T",
+            url="http://x",
+            item_type="item",
+            date="",
+            body_text="body",
+            source_system="test",
+        )
         system, user = client._build_prompt(item)
         assert system == "Custom prompt here"

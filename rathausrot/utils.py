@@ -5,7 +5,6 @@ from collections import deque
 from datetime import date, datetime
 from html.parser import HTMLParser
 from logging.handlers import RotatingFileHandler
-from typing import Optional
 
 RATSINFO_USER_AGENT = (
     "RathausRot/1.0 (Kommunalpolitik-Bot; +https://github.com/Ninso112/RathausRot)"
@@ -22,7 +21,7 @@ class MemoryLogHandler(logging.Handler):
     def emit(self, record):
         self._buffer.append(self.format(record))
 
-    def get_logs(self, count: int = 50, level: Optional[str] = None) -> list:
+    def get_logs(self, count: int = 50, level: str | None = None) -> list:
         """Return the last `count` entries, optionally filtered by level."""
         entries = list(self._buffer)
         if level:
@@ -30,7 +29,7 @@ class MemoryLogHandler(logging.Handler):
         return entries[-count:]
 
 
-_memory_handler: Optional[MemoryLogHandler] = None
+_memory_handler: MemoryLogHandler | None = None
 
 
 def setup_logging(
@@ -64,7 +63,7 @@ def setup_logging(
     return _memory_handler
 
 
-def get_memory_handler() -> Optional[MemoryLogHandler]:
+def get_memory_handler() -> MemoryLogHandler | None:
     return _memory_handler
 
 
@@ -88,7 +87,7 @@ def chunk_html(html: str, max_bytes: int = 60000) -> list:
     return chunks
 
 
-def parse_german_date(date_str: str) -> Optional[date]:
+def parse_german_date(date_str: str) -> date | None:
     """Parse a German date string (e.g. 'Mi, 15.01.2024 10:00 Uhr') into a date object."""
     if not date_str:
         return None

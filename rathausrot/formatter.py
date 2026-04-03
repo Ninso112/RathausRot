@@ -1,8 +1,7 @@
 import html
 import logging
-from typing import List, Optional, Tuple
 
-from rathausrot.utils import chunk_html, strip_html
+from rathausrot.utils import chunk_html
 from rathausrot.models import CouncilItem, Session
 from rathausrot.llm_client import LLMResult
 
@@ -32,10 +31,10 @@ class MatrixFormatter:
     def format_single_item_report(
         self,
         item: CouncilItem,
-        result: Optional[LLMResult],
+        result: LLMResult | None,
         source_url: str = "",
         city_name: str = "",
-    ) -> List[str]:
+    ) -> list[str]:
         if source_url:
             source_link = (
                 f' – <a href="{html.escape(source_url, quote=True)}">Ratsinfo</a>'
@@ -64,7 +63,7 @@ class MatrixFormatter:
             f"<hr>\n"
         )
 
-    def format_item(self, item: CouncilItem, result: Optional[LLMResult]) -> str:
+    def format_item(self, item: CouncilItem, result: LLMResult | None) -> str:
         safe_url = html.escape(item.url, quote=True)
         safe_title = html.escape(item.title)
         title_link = f'<a href="{safe_url}">{safe_title}</a>'
@@ -95,7 +94,7 @@ class MatrixFormatter:
             )
             parts.append(f"<p><strong>Relevanz:</strong> {stars}</p>")
         else:
-            parts.append(f"<p><em>Keine KI-Analyse verfügbar.</em></p>")
+            parts.append("<p><em>Keine KI-Analyse verfügbar.</em></p>")
         return "\n".join(parts)
 
     def format_footer(self) -> str:

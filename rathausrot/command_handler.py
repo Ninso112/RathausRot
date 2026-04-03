@@ -4,7 +4,7 @@ import os
 import signal
 import threading
 from datetime import datetime
-from typing import Callable, Dict, List, Optional
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +35,8 @@ class CommandHandler:
         self,
         config: dict,
         scheduler_ref,
-        send_extra: Optional[Callable[[List[str]], None]] = None,
-        send_file_bytes: Optional[Callable] = None,
+        send_extra: Callable[[list[str]], None] | None = None,
+        send_file_bytes: Callable | None = None,
     ):
         self.config = config
         self.scheduler_ref = scheduler_ref
@@ -47,7 +47,7 @@ class CommandHandler:
         self._scrape_lock = threading.Lock()
         self._scrape_running = False
         self._start_time = datetime.now()
-        self._commands: Dict[str, Callable] = {
+        self._commands: dict[str, Callable] = {
             "!hilfe": self._cmd_help,
             "!help": self._cmd_help,
             "!scrape": self._cmd_scrape,
@@ -74,7 +74,7 @@ class CommandHandler:
             return True
         return sender in self.allowed_users
 
-    def handle(self, sender: str, body: str) -> Optional[str]:
+    def handle(self, sender: str, body: str) -> str | None:
         """Parse and execute a command. Returns HTML response string or None."""
         # Never respond to own messages
         if sender == self.bot_username:
@@ -178,7 +178,9 @@ class CommandHandler:
     def _cmd_abbruch(self, sender: str, body: str) -> str:
         with self._scrape_lock:
             running = self._scrape_running
-        if not running and not self.scheduler_ref.get_pipeline_progress().get("running", False):
+        if not running and not self.scheduler_ref.get_pipeline_progress().get(
+            "running", False
+        ):
             return "<p>ℹ️ Kein Scrape läuft gerade.</p>"
         self.scheduler_ref.cancel_pipeline()
         return "<p>🛑 Abbruch angefordert – das aktuelle Item wird noch fertig verarbeitet.</p>"
@@ -248,7 +250,7 @@ class CommandHandler:
         )
 
     def _cmd_verlauf(self, sender: str, body: str) -> str:
-        entries = self.scheduler_ref._history.get_recent(10)
+        entries = self.scheduler_ref.history.get_recent(10)
         if not entries:
             return "<p>📋 Noch keine Läufe aufgezeichnet.</p>"
 
@@ -355,7 +357,7 @@ class CommandHandler:
         )
 
     def _cmd_statistik(self, sender: str, body: str) -> str:
-        entries = self.scheduler_ref._history.get_recent(100)
+        entries = self.scheduler_ref.history.get_recent(100)
         if not entries:
             return "<p>📊 Noch keine Statistiken verfügbar.</p>"
 

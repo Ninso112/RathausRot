@@ -1,8 +1,9 @@
 import os
 import tempfile
 import logging
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 
 import yaml
 
@@ -42,7 +43,7 @@ DEFAULT_CONFIG = {
 }
 
 
-def get_cities_from_config(config: dict) -> List[dict]:
+def get_cities_from_config(config: dict) -> list[dict]:
     """Return normalized city list from a config dict. Usable without a ConfigManager instance."""
     cities = config.get("cities", [])
     base_scraper = config.get("scraper", {})
@@ -51,32 +52,42 @@ def get_cities_from_config(config: dict) -> List[dict]:
     if cities:
         result = []
         for c in cities:
-            result.append({
-                "name": c.get("name", ""),
-                "ratsinfo_url": c.get("ratsinfo_url") or base_scraper.get("ratsinfo_url", ""),
-                "room_id": c.get("room_id") or base_matrix.get("room_id", ""),
-                "keywords": c.get("keywords", base_scraper.get("keywords", [])),
-                "system_prompt": c.get("system_prompt") or base_openrouter.get("system_prompt", ""),
-            })
+            result.append(
+                {
+                    "name": c.get("name", ""),
+                    "ratsinfo_url": c.get("ratsinfo_url")
+                    or base_scraper.get("ratsinfo_url", ""),
+                    "room_id": c.get("room_id") or base_matrix.get("room_id", ""),
+                    "keywords": c.get("keywords", base_scraper.get("keywords", [])),
+                    "system_prompt": c.get("system_prompt")
+                    or base_openrouter.get("system_prompt", ""),
+                }
+            )
         return result
-    return [{
-        "name": "",
-        "ratsinfo_url": base_scraper.get("ratsinfo_url", ""),
-        "room_id": base_matrix.get("room_id", ""),
-        "keywords": base_scraper.get("keywords", []),
-        "system_prompt": base_openrouter.get("system_prompt", ""),
-    }]
+    return [
+        {
+            "name": "",
+            "ratsinfo_url": base_scraper.get("ratsinfo_url", ""),
+            "room_id": base_matrix.get("room_id", ""),
+            "keywords": base_scraper.get("keywords", []),
+            "system_prompt": base_openrouter.get("system_prompt", ""),
+        }
+    ]
 
 
 class ConfigManager:
     def __init__(self, config_path: str = "config.yaml"):
         self.config_path = Path(config_path)
-        self._config: Optional[dict] = None
+        self._config: dict | None = None
 
     def _deep_merge(self, base: dict, override: dict) -> dict:
         result = dict(base)
         for key, value in override.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            if (
+                key in result
+                and isinstance(result[key], dict)
+                and isinstance(value, dict)
+            ):
                 result[key] = self._deep_merge(result[key], value)
             else:
                 result[key] = value
@@ -86,7 +97,7 @@ class ConfigManager:
         if self._config is not None:
             return self._config
         if self.config_path.exists():
-            with open(self.config_path, "r", encoding="utf-8") as f:
+            with open(self.config_path, encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
             self._config = self._deep_merge(DEFAULT_CONFIG, user_config)
         else:
@@ -110,10 +121,8 @@ class ConfigManager:
                 yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
             os.replace(tmp_path, self.config_path)
         except Exception:
-            try:
+            with suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
             raise
         self._config = config
         logger.info("Configuration saved to %s", self.config_path)
@@ -130,12 +139,10 @@ class ConfigManager:
         has_room = bool(room_id or room_ids)
         # Multi-city configs may have per-city ratsinfo_urls without a global one
         cities = config.get("cities", [])
-        has_ratsinfo = bool(ratsinfo_url) or any(
-            c.get("ratsinfo_url") for c in cities
-        )
+        has_ratsinfo = bool(ratsinfo_url) or any(c.get("ratsinfo_url") for c in cities)
         return bool(token and api_key and homeserver and has_room and has_ratsinfo)
 
-    def get_cities(self) -> List[dict]:
+    def get_cities(self) -> list[dict]:
         """Return normalized city list. Falls back to global config if cities: [] is absent."""
         return get_cities_from_config(self.load())
 

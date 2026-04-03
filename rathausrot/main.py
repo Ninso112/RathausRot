@@ -3,23 +3,34 @@ import logging
 import signal
 import sys
 
+import threading
+
 logger = logging.getLogger(__name__)
 
 
-_config_manager_ref = None
-_scheduler_ref = None
+class _Application:
+    """Holds references to long-lived application components needed for shutdown."""
 
+    def __init__(self):
+        self.config_manager = None
+        self.scheduler = None
+        self._shutdown_lock = threading.Lock()
+        self._shutting_down = False
 
-def _make_signal_handler():
-    def _handler(signum, frame):
+    def shutdown(self, signum=None, frame=None):
+        with self._shutdown_lock:
+            if self._shutting_down:
+                return
+            self._shutting_down = True
+
         print("\nShutting down RathausRot...")
-        if _scheduler_ref is not None:
-            _scheduler_ref.stop()
+        if self.scheduler is not None:
+            self.scheduler.stop()
         try:
             from rathausrot.matrix_bot import MatrixBot
 
-            if _config_manager_ref is not None:
-                config = _config_manager_ref.load()
+            if self.config_manager is not None:
+                config = self.config_manager.load()
                 bot = MatrixBot(config)
                 bot.send_shutdown_message()
                 bot.close()
@@ -27,7 +38,8 @@ def _make_signal_handler():
             print(f"Could not send shutdown message: {exc}")
         sys.exit(0)
 
-    return _handler
+
+_app = _Application()
 
 
 def main():
@@ -51,15 +63,14 @@ def main():
         sys.exit(0)
 
     config_manager = ConfigManager()
-    global _config_manager_ref
-    _config_manager_ref = config_manager
+    _app.config_manager = config_manager
     setup_logging(
         log_file=config_manager.get("bot", "log_file", default="rathausrot.log"),
         level=config_manager.get("bot", "log_level", default="INFO"),
     )
 
-    signal.signal(signal.SIGTERM, _make_signal_handler())
-    signal.signal(signal.SIGINT, _make_signal_handler())
+    signal.signal(signal.SIGTERM, _app.shutdown)
+    signal.signal(signal.SIGINT, _app.shutdown)
 
     if args.setup:
         from rathausrot.setup_wizard import run_wizard
@@ -96,9 +107,8 @@ def main():
         bot.send_startup_message()
         bot.close()
     except Exception as exc:
-        logger.warning("Could not send startup message: %s", exc)
+        logging.warning("Could not send startup message: %s", exc)
 
-    global _scheduler_ref
     scheduler = BotScheduler(config_manager)
-    _scheduler_ref = scheduler
+    _app.scheduler = scheduler
     scheduler.start(run_now=args.run_now)

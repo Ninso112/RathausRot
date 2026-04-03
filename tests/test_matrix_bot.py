@@ -1,5 +1,4 @@
 import asyncio
-import threading
 from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
@@ -30,6 +29,7 @@ def make_config(**overrides):
 # __init__
 # ------------------------------------------------------------------ #
 
+
 class TestMatrixBotInit:
     def test_single_room_id(self):
         bot = MatrixBot(make_config())
@@ -38,19 +38,28 @@ class TestMatrixBotInit:
         assert bot.username == "@bot:example.com"
 
     def test_room_ids_list(self):
-        config = make_config(matrix={
-            "homeserver": "https://m.org", "username": "@b:m.org",
-            "access_token": "tok", "room_id": "!old:m.org",
-            "room_ids": ["!r1:m.org", "!r2:m.org"],
-        })
+        config = make_config(
+            matrix={
+                "homeserver": "https://m.org",
+                "username": "@b:m.org",
+                "access_token": "tok",
+                "room_id": "!old:m.org",
+                "room_ids": ["!r1:m.org", "!r2:m.org"],
+            }
+        )
         bot = MatrixBot(config)
         assert bot.room_ids == ["!r1:m.org", "!r2:m.org"]
 
     def test_no_rooms(self):
-        config = make_config(matrix={
-            "homeserver": "https://m.org", "username": "@b:m.org",
-            "access_token": "tok", "room_id": "", "room_ids": [],
-        })
+        config = make_config(
+            matrix={
+                "homeserver": "https://m.org",
+                "username": "@b:m.org",
+                "access_token": "tok",
+                "room_id": "",
+                "room_ids": [],
+            }
+        )
         bot = MatrixBot(config)
         assert bot.room_ids == []
 
@@ -62,6 +71,7 @@ class TestMatrixBotInit:
 # ------------------------------------------------------------------ #
 # send_chunks
 # ------------------------------------------------------------------ #
+
 
 class TestSendChunks:
     def test_send_chunks_calls_send_message(self):
@@ -89,6 +99,7 @@ class TestSendChunks:
 # send_startup_message / send_shutdown_message
 # ------------------------------------------------------------------ #
 
+
 class TestStartupShutdown:
     def test_startup_message(self):
         bot = MatrixBot(make_config())
@@ -111,6 +122,7 @@ class TestStartupShutdown:
 # close
 # ------------------------------------------------------------------ #
 
+
 class TestClose:
     def test_close_no_client(self):
         bot = MatrixBot(make_config())
@@ -127,6 +139,7 @@ class TestClose:
 # run_sync
 # ------------------------------------------------------------------ #
 
+
 class TestRunSync:
     def test_run_sync(self):
         bot = MatrixBot(make_config())
@@ -141,6 +154,7 @@ class TestRunSync:
 # ------------------------------------------------------------------ #
 # _new_client
 # ------------------------------------------------------------------ #
+
 
 class TestNewClient:
     def test_creates_new_client(self):
@@ -159,6 +173,7 @@ class TestNewClient:
 # ------------------------------------------------------------------ #
 # send_message
 # ------------------------------------------------------------------ #
+
 
 class TestLoginWithPassword:
     def test_login_success(self):
@@ -249,10 +264,15 @@ class TestSendMessage:
         mock_client.room_send.assert_called_once()
 
     def test_send_message_no_rooms(self):
-        config = make_config(matrix={
-            "homeserver": "https://m.org", "username": "@b:m.org",
-            "access_token": "tok", "room_id": "", "room_ids": [],
-        })
+        config = make_config(
+            matrix={
+                "homeserver": "https://m.org",
+                "username": "@b:m.org",
+                "access_token": "tok",
+                "room_id": "",
+                "room_ids": [],
+            }
+        )
         bot = MatrixBot(config)
         mock_nio = MagicMock()
         mock_client = MagicMock()
@@ -268,6 +288,7 @@ class TestSendMessage:
 # ------------------------------------------------------------------ #
 # start_command_listener
 # ------------------------------------------------------------------ #
+
 
 class TestStartCommandListener:
     def test_starts_daemon_thread(self):

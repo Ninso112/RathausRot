@@ -1,9 +1,9 @@
 import hashlib
 import logging
 import re
-from datetime import date, datetime
+from datetime import date
 from io import BytesIO
-from typing import Iterator, List, Optional
+from collections.abc import Iterator
 from urllib.robotparser import RobotFileParser
 from urllib.parse import urljoin, urlparse, parse_qs
 
@@ -11,7 +11,12 @@ import requests
 from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
 
-from rathausrot.utils import RATSINFO_USER_AGENT, parse_german_date, rate_limit_sleep, truncate_text
+from rathausrot.utils import (
+    RATSINFO_USER_AGENT,
+    parse_german_date,
+    rate_limit_sleep,
+    truncate_text,
+)
 from rathausrot.models import CouncilItem, Session
 from rathausrot.database import (
     DatabaseManager,
@@ -68,7 +73,7 @@ class RatsinfoScraper:
         )
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
-        self._detected_system: Optional[str] = None
+        self._detected_system: str | None = None
 
     def close(self):
         """Close the HTTP session and release connection pool resources."""
@@ -120,14 +125,14 @@ class RatsinfoScraper:
             self._detected_system = "unknown"
         return self._detected_system
 
-    def count_upcoming_items(self) -> Optional[int]:
+    def count_upcoming_items(self) -> int | None:
         """Return the number of upcoming (future-dated) items if quickly determinable."""
         system = self.detect_system()
         if system == "sternberg":
             return self._count_sternberg_upcoming()
         return None
 
-    def _count_sternberg_upcoming(self) -> Optional[int]:
+    def _count_sternberg_upcoming(self) -> int | None:
         vorlagen_url = urljoin(self.base_url, "/vorlagen")
         soup = self._fetch_page(vorlagen_url)
         if soup is None:
@@ -276,7 +281,7 @@ class RatsinfoScraper:
 
     def _parse_sternberg_item(
         self, item_id: str, title: str, url: str, date_str: str
-    ) -> Optional[CouncilItem]:
+    ) -> CouncilItem | None:
         detail_soup = self._fetch_page(url)
         body_text = ""
         pdf_texts = []
@@ -349,7 +354,7 @@ class RatsinfoScraper:
             except Exception as exc:
                 logger.warning("Error in generic fetch: %s", exc)
 
-    def _parse_list_item(self, element, source_system: str) -> Optional[CouncilItem]:
+    def _parse_list_item(self, element, source_system: str) -> CouncilItem | None:
         a_tag = element.find("a", href=True)
         if not a_tag:
             return None
@@ -393,7 +398,7 @@ class RatsinfoScraper:
             city_name=self.city_name,
         )
 
-    def _fetch_page(self, url: str) -> Optional[BeautifulSoup]:
+    def _fetch_page(self, url: str) -> BeautifulSoup | None:
         try:
             resp = self.session.get(url, timeout=self.timeout)
             resp.raise_for_status()
@@ -430,7 +435,7 @@ class RatsinfoScraper:
         raw = f"{url}|{title}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
-    def fetch_sessions(self) -> List[Session]:
+    def fetch_sessions(self) -> list[Session]:
         """Fetch session list from the council system. Returns new sessions for announcement."""
         if not self.base_url:
             return []
@@ -446,7 +451,7 @@ class RatsinfoScraper:
             logger.warning("fetch_sessions failed: %s", exc)
             return []
 
-    def _fetch_sessions_sternberg(self) -> List[Session]:
+    def _fetch_sessions_sternberg(self) -> list[Session]:
         sitzungen_url = urljoin(self.base_url, "/sitzungen")
         soup = self._fetch_page(sitzungen_url)
         if soup is None:
@@ -483,7 +488,7 @@ class RatsinfoScraper:
                 logger.warning("Error parsing Sternberg session: %s", exc)
         return sessions
 
-    def _fetch_sessions_sessionnet(self) -> List[Session]:
+    def _fetch_sessions_sessionnet(self) -> list[Session]:
         soup = self._fetch_page(self.base_url)
         if soup is None:
             return []

@@ -3,7 +3,6 @@ import logging
 import sqlite3
 import threading
 from dataclasses import asdict
-from typing import List, Optional
 
 from rathausrot.models import CouncilItem, Session
 
@@ -65,7 +64,7 @@ class DuplicateTracker:
             )
             conn.commit()
 
-    def check_and_mark_batch(self, item_ids: List[str]) -> List[str]:
+    def check_and_mark_batch(self, item_ids: list[str]) -> list[str]:
         """Check multiple items at once and mark them as processed. Returns only new item IDs."""
         if not item_ids:
             return []
@@ -111,7 +110,7 @@ class RunHistoryTracker:
             )
             conn.commit()
 
-    def get_recent(self, limit: int = 10) -> List[dict]:
+    def get_recent(self, limit: int = 10) -> list[dict]:
         with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT ran_at, item_count, success, error_msg FROM run_history "
@@ -212,7 +211,7 @@ class CouncilItemStore:
             )
             conn.commit()
 
-    def get_all_as_items(self, limit: int = 500) -> List[CouncilItem]:
+    def get_all_as_items(self, limit: int = 500) -> list[CouncilItem]:
         """Return all stored items as CouncilItem objects (no pdf_texts/pdf_urls)."""
         with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
@@ -233,7 +232,7 @@ class CouncilItemStore:
             for r in rows
         ]
 
-    def get_new_sessions(self, sessions: List[Session]) -> List[Session]:
+    def get_new_sessions(self, sessions: list[Session]) -> list[Session]:
         """Return sessions not yet in known_sessions."""
         if not sessions:
             return []
@@ -259,7 +258,7 @@ class CouncilItemStore:
             )
             conn.commit()
 
-    def search(self, query: str, limit: int = 10) -> List[dict]:
+    def search(self, query: str, limit: int = 10) -> list[dict]:
         pattern = f"%{query}%"
         with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
@@ -296,7 +295,7 @@ class LLMCache:
             )
             conn.commit()
 
-    def get(self, item_id: str) -> Optional[dict]:
+    def get(self, item_id: str) -> dict | None:
         with DatabaseManager.get_connection(self.db_path) as conn:
             row = conn.execute(
                 "SELECT result_json FROM llm_cache WHERE item_id = ?", (item_id,)

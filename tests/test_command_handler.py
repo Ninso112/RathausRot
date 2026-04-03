@@ -1,11 +1,7 @@
-import html
-import threading
 import time
 from datetime import datetime
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from rathausrot.command_handler import CommandHandler, _format_duration
 
@@ -13,13 +9,19 @@ from rathausrot.command_handler import CommandHandler, _format_duration
 def make_handler(**config_overrides):
     config = {
         "matrix": {"username": "@bot:example.com"},
-        "bot": {"allowed_users": [], "schedule_day": "monday", "schedule_time": "08:00", "party": "SPD"},
+        "bot": {
+            "allowed_users": [],
+            "schedule_day": "monday",
+            "schedule_time": "08:00",
+            "party": "SPD",
+        },
         "scraper": {"ratsinfo_url": "http://example.com"},
     }
     config.update(config_overrides)
     scheduler = MagicMock()
-    scheduler._history = MagicMock()
-    scheduler._history.get_recent.return_value = []
+    history_mock = MagicMock()
+    history_mock.get_recent.return_value = []
+    scheduler.history = history_mock
     scheduler.get_next_run_time.return_value = None
     scheduler.get_last_report_chunks.return_value = []
     scheduler.get_pipeline_progress.return_value = {"running": False}
@@ -30,20 +32,33 @@ def make_handler(**config_overrides):
 # Authorization
 # ------------------------------------------------------------------ #
 
+
 class TestAuthorization:
     def test_empty_allowed_users_allows_everyone(self):
         handler = make_handler()
         assert handler.is_allowed("@anyone:example.com") is True
 
     def test_restricted_users(self):
-        handler = make_handler(bot={"allowed_users": ["@admin:example.com"],
-                                    "schedule_day": "monday", "schedule_time": "08:00", "party": "SPD"})
+        handler = make_handler(
+            bot={
+                "allowed_users": ["@admin:example.com"],
+                "schedule_day": "monday",
+                "schedule_time": "08:00",
+                "party": "SPD",
+            }
+        )
         assert handler.is_allowed("@admin:example.com") is True
         assert handler.is_allowed("@other:example.com") is False
 
     def test_unauthorized_command_returns_error(self):
-        handler = make_handler(bot={"allowed_users": ["@admin:example.com"],
-                                    "schedule_day": "monday", "schedule_time": "08:00", "party": "SPD"})
+        handler = make_handler(
+            bot={
+                "allowed_users": ["@admin:example.com"],
+                "schedule_day": "monday",
+                "schedule_time": "08:00",
+                "party": "SPD",
+            }
+        )
         result = handler.handle("@other:example.com", "!hilfe")
         assert result is not None
         assert "Keine Berechtigung" in result
@@ -53,26 +68,39 @@ class TestAuthorization:
 # XSS Escaping
 # ------------------------------------------------------------------ #
 
+
 class TestXSSEscaping:
     def test_sender_name_escaped(self):
-        handler = make_handler(bot={"allowed_users": ["@legit:example.com"],
-                                    "schedule_day": "monday", "schedule_time": "08:00", "party": "SPD"})
+        handler = make_handler(
+            bot={
+                "allowed_users": ["@legit:example.com"],
+                "schedule_day": "monday",
+                "schedule_time": "08:00",
+                "party": "SPD",
+            }
+        )
         result = handler.handle("<script>alert(1)</script>", "!hilfe")
         assert "<script>" not in result
         assert "&lt;script&gt;" in result
 
     def test_error_message_escaped(self):
         handler = make_handler()
-        handler._commands["!hilfe"] = MagicMock(side_effect=ValueError("<script>xss</script>"))
+        handler._commands["!hilfe"] = MagicMock(
+            side_effect=ValueError("<script>xss</script>")
+        )
         result = handler.handle("@user:example.com", "!hilfe")
         assert "<script>" not in result
         assert "&lt;script&gt;" in result
 
     def test_verlauf_error_msg_escaped(self):
         handler = make_handler()
-        handler.scheduler_ref._history.get_recent.return_value = [
-            {"ran_at": "2024-01-15 10:00", "item_count": 1, "success": False,
-             "error_msg": "<img src=x onerror=alert(1)>"}
+        handler.scheduler_ref.history.get_recent.return_value = [
+            {
+                "ran_at": "2024-01-15 10:00",
+                "item_count": 1,
+                "success": False,
+                "error_msg": "<img src=x onerror=alert(1)>",
+            }
         ]
         result = handler.handle("@user:example.com", "!verlauf")
         assert "<img" not in result
@@ -82,6 +110,7 @@ class TestXSSEscaping:
 # ------------------------------------------------------------------ #
 # Basic Commands
 # ------------------------------------------------------------------ #
+
 
 class TestBasicCommands:
     def test_help_command(self):
@@ -122,6 +151,7 @@ class TestBasicCommands:
 # Status Command
 # ------------------------------------------------------------------ #
 
+
 class TestStatusCommand:
     def test_status_no_last_run(self, tmp_path):
         handler = make_handler()
@@ -153,14 +183,20 @@ class TestStatusCommand:
 
     def test_status_shows_party(self):
         handler = make_handler()
-        with patch("rathausrot.scheduler.LAST_RUN_FILE", MagicMock(exists=MagicMock(return_value=False))):
+        with patch(
+            "rathausrot.scheduler.LAST_RUN_FILE",
+            MagicMock(exists=MagicMock(return_value=False)),
+        ):
             result = handler._cmd_status("@user:example.com", "!status")
         assert "SPD" in result
 
     def test_status_scrape_running(self):
         handler = make_handler()
         handler._scrape_running = True
-        with patch("rathausrot.scheduler.LAST_RUN_FILE", MagicMock(exists=MagicMock(return_value=False))):
+        with patch(
+            "rathausrot.scheduler.LAST_RUN_FILE",
+            MagicMock(exists=MagicMock(return_value=False)),
+        ):
             result = handler._cmd_status("@user:example.com", "!status")
         assert "Scrape läuft" in result
 
@@ -168,6 +204,7 @@ class TestStatusCommand:
 # ------------------------------------------------------------------ #
 # Verlauf Command
 # ------------------------------------------------------------------ #
+
 
 class TestVerlaufCommand:
     def test_verlauf_empty(self):
@@ -177,9 +214,19 @@ class TestVerlaufCommand:
 
     def test_verlauf_with_entries(self):
         handler = make_handler()
-        handler.scheduler_ref._history.get_recent.return_value = [
-            {"ran_at": "2024-01-15T10:00:00", "item_count": 5, "success": True, "error_msg": ""},
-            {"ran_at": "2024-01-14T09:00:00", "item_count": 0, "success": False, "error_msg": "timeout"},
+        handler.scheduler_ref.history.get_recent.return_value = [
+            {
+                "ran_at": "2024-01-15T10:00:00",
+                "item_count": 5,
+                "success": True,
+                "error_msg": "",
+            },
+            {
+                "ran_at": "2024-01-14T09:00:00",
+                "item_count": 0,
+                "success": False,
+                "error_msg": "timeout",
+            },
         ]
         result = handler.handle("@user:example.com", "!verlauf")
         assert "Letzte Läufe" in result
@@ -190,7 +237,7 @@ class TestVerlaufCommand:
 
     def test_verlauf_unparseable_date(self):
         handler = make_handler()
-        handler.scheduler_ref._history.get_recent.return_value = [
+        handler.scheduler_ref.history.get_recent.return_value = [
             {"ran_at": "bad-date", "item_count": 1, "success": True, "error_msg": ""},
         ]
         result = handler.handle("@user:example.com", "!verlauf")
@@ -201,6 +248,7 @@ class TestVerlaufCommand:
 # Nächste Command
 # ------------------------------------------------------------------ #
 
+
 class TestNaechsteCommand:
     def test_naechste_no_scheduled(self):
         handler = make_handler()
@@ -209,7 +257,9 @@ class TestNaechsteCommand:
 
     def test_naechste_with_scheduled(self):
         handler = make_handler()
-        handler.scheduler_ref.get_next_run_time.return_value = datetime(2024, 6, 17, 8, 0)
+        handler.scheduler_ref.get_next_run_time.return_value = datetime(
+            2024, 6, 17, 8, 0
+        )
         result = handler.handle("@user:example.com", "!nächste")
         assert "17.06.2024 08:00 Uhr" in result
 
@@ -223,6 +273,7 @@ class TestNaechsteCommand:
 # Kalender Command
 # ------------------------------------------------------------------ #
 
+
 class TestKalenderCommand:
     def test_kalender_no_items(self):
         handler = make_handler()
@@ -235,6 +286,7 @@ class TestKalenderCommand:
 # ------------------------------------------------------------------ #
 # Stat Command
 # ------------------------------------------------------------------ #
+
 
 class TestStatCommand:
     def test_stat_returns_system_info(self):
@@ -251,6 +303,7 @@ class TestStatCommand:
 # Statistik Command
 # ------------------------------------------------------------------ #
 
+
 class TestStatistikCommand:
     def test_statistik_no_data(self):
         handler = make_handler()
@@ -259,9 +312,14 @@ class TestStatistikCommand:
 
     def test_statistik_with_data(self):
         handler = make_handler()
-        handler.scheduler_ref._history.get_recent.return_value = [
+        handler.scheduler_ref.history.get_recent.return_value = [
             {"ran_at": "2024-01-15", "item_count": 5, "success": True, "error_msg": ""},
-            {"ran_at": "2024-01-14", "item_count": 3, "success": False, "error_msg": "err"},
+            {
+                "ran_at": "2024-01-14",
+                "item_count": 3,
+                "success": False,
+                "error_msg": "err",
+            },
         ]
         result = handler.handle("@user:example.com", "!statistik")
         assert "Statistiken" in result
@@ -273,6 +331,7 @@ class TestStatistikCommand:
 # Log Command
 # ------------------------------------------------------------------ #
 
+
 class TestLogCommand:
     def test_log_no_handler(self):
         handler = make_handler()
@@ -283,6 +342,7 @@ class TestLogCommand:
     def test_log_with_entries(self):
         handler = make_handler()
         from rathausrot.utils import MemoryLogHandler
+
         mem_handler = MemoryLogHandler(max_entries=10)
         mem_handler._buffer.append("2024-01-01 [INFO] test: Hello")
         mem_handler._buffer.append("2024-01-01 [ERROR] test: Bad thing")
@@ -295,6 +355,7 @@ class TestLogCommand:
     def test_log_with_level_filter(self):
         handler = make_handler()
         from rathausrot.utils import MemoryLogHandler
+
         mem_handler = MemoryLogHandler(max_entries=10)
         mem_handler._buffer.append("2024-01-01 [INFO] test: info msg")
         mem_handler._buffer.append("2024-01-01 [ERROR] test: error msg")
@@ -306,6 +367,7 @@ class TestLogCommand:
     def test_log_with_count(self):
         handler = make_handler()
         from rathausrot.utils import MemoryLogHandler
+
         mem_handler = MemoryLogHandler(max_entries=100)
         for i in range(50):
             mem_handler._buffer.append(f"2024-01-01 [INFO] test: msg{i}")
@@ -316,6 +378,7 @@ class TestLogCommand:
     def test_log_empty(self):
         handler = make_handler()
         from rathausrot.utils import MemoryLogHandler
+
         mem_handler = MemoryLogHandler(max_entries=10)
         with patch("rathausrot.utils._memory_handler", mem_handler):
             result = handler.handle("@user:example.com", "!log")
@@ -324,6 +387,7 @@ class TestLogCommand:
     def test_log_escapes_html(self):
         handler = make_handler()
         from rathausrot.utils import MemoryLogHandler
+
         mem_handler = MemoryLogHandler(max_entries=10)
         mem_handler._buffer.append("2024-01-01 [INFO] test: <script>alert(1)</script>")
         with patch("rathausrot.utils._memory_handler", mem_handler):
@@ -335,6 +399,7 @@ class TestLogCommand:
 # ------------------------------------------------------------------ #
 # Config Command
 # ------------------------------------------------------------------ #
+
 
 class TestConfigCommand:
     def test_config_shows_settings(self):
@@ -348,10 +413,13 @@ class TestConfigCommand:
 # Scrape Race Condition
 # ------------------------------------------------------------------ #
 
+
 class TestScrapeRaceCondition:
     def test_concurrent_scrape_rejected(self):
         handler = make_handler()
-        handler.scheduler_ref.run_pipeline = MagicMock(side_effect=lambda: time.sleep(0.5))
+        handler.scheduler_ref.run_pipeline = MagicMock(
+            side_effect=lambda: time.sleep(0.5)
+        )
 
         result1 = handler.handle("@user:example.com", "!scrape")
         assert "gestartet" in result1
@@ -382,6 +450,7 @@ class TestScrapeRaceCondition:
 # ------------------------------------------------------------------ #
 # _format_duration
 # ------------------------------------------------------------------ #
+
 
 class TestFormatDuration:
     def test_zero_seconds(self):

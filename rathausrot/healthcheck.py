@@ -2,9 +2,8 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
+from contextlib import suppress
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +27,8 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
         last_run = None
         if LAST_RUN_FILE.exists():
-            try:
+            with suppress(Exception):
                 last_run = LAST_RUN_FILE.read_text().strip()
-            except Exception:
-                pass
 
         scrape_running = False
         if self.scheduler_ref and hasattr(self.scheduler_ref, "_bot"):
@@ -109,7 +106,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         logger.debug("Healthcheck: %s", format % args)
 
 
-def start_healthcheck(port: int, scheduler_ref=None) -> Optional[threading.Thread]:
+def start_healthcheck(port: int, scheduler_ref=None) -> threading.Thread | None:
     """Start the health check HTTP server in a daemon thread. Returns the thread or None."""
     if port <= 0:
         return None

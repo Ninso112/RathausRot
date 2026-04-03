@@ -1,10 +1,15 @@
 import logging
 import os
-import tempfile
 
-import pytest
 
-from rathausrot.utils import chunk_html, truncate_text, strip_html, MemoryLogHandler, setup_logging, get_memory_handler
+from rathausrot.utils import (
+    chunk_html,
+    truncate_text,
+    strip_html,
+    MemoryLogHandler,
+    setup_logging,
+    get_memory_handler,
+)
 
 
 class TestChunkHtml:

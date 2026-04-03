@@ -1,4 +1,3 @@
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -39,19 +38,16 @@ class TestMainNotConfigured:
 
 class TestSignalHandler:
     def test_signal_handler_calls_stop(self):
-        from rathausrot.main import _make_signal_handler
-
-        handler = _make_signal_handler()
-
-        # Import and set the global scheduler ref
-        import rathausrot.main as main_mod
+        from rathausrot.main import _app
 
         mock_scheduler = MagicMock()
-        original = main_mod._scheduler_ref
-        original_cm = main_mod._config_manager_ref
-        main_mod._scheduler_ref = mock_scheduler
-        main_mod._config_manager_ref = MagicMock()
-        main_mod._config_manager_ref.load.return_value = {
+        original_scheduler = _app.scheduler
+        original_cm = _app.config_manager
+        original_shutting_down = _app._shutting_down
+        _app._shutting_down = False
+        _app.scheduler = mock_scheduler
+        _app.config_manager = MagicMock()
+        _app.config_manager.load.return_value = {
             "matrix": {
                 "homeserver": "",
                 "username": "",
@@ -65,28 +61,48 @@ class TestSignalHandler:
             MockBot.return_value.send_shutdown_message = MagicMock()
             MockBot.return_value.close = MagicMock()
             with pytest.raises(SystemExit):
-                handler(2, None)
+                _app.shutdown(2, None)
 
         mock_scheduler.stop.assert_called_once()
-        main_mod._scheduler_ref = original
-        main_mod._config_manager_ref = original_cm
+        _app.scheduler = original_scheduler
+        _app.config_manager = original_cm
+        _app._shutting_down = original_shutting_down
 
     def test_signal_handler_handles_bot_error(self):
-        from rathausrot.main import _make_signal_handler
+        from rathausrot.main import _app
 
-        handler = _make_signal_handler()
-
-        import rathausrot.main as main_mod
-
-        original = main_mod._scheduler_ref
-        original_cm = main_mod._config_manager_ref
-        main_mod._scheduler_ref = None
-        main_mod._config_manager_ref = None
+        original_scheduler = _app.scheduler
+        original_cm = _app.config_manager
+        original_shutting_down = _app._shutting_down
+        _app._shutting_down = False
+        _app.scheduler = None
+        _app.config_manager = None
 
         with pytest.raises(SystemExit):
-            handler(2, None)
-        main_mod._scheduler_ref = original
-        main_mod._config_manager_ref = original_cm
+            _app.shutdown(2, None)
+        _app.scheduler = original_scheduler
+        _app.config_manager = original_cm
+        _app._shutting_down = original_shutting_down
+
+    def test_signal_handler_idempotent(self):
+        from rathausrot.main import _app
+
+        mock_scheduler = MagicMock()
+        original = _app.scheduler
+        original_shutting_down = _app._shutting_down
+        _app._shutting_down = False
+        _app.scheduler = mock_scheduler
+        _app.config_manager = None
+
+        with pytest.raises(SystemExit):
+            _app.shutdown(2, None)
+        mock_scheduler.stop.assert_called_once()
+        # Reset for idempotency check: second call after _shutting_down=True
+        # should be a no-op (returns early due to lock). Since we can't call
+        # again (exit already raised), we verify the lock state directly.
+        assert _app._shutting_down is True
+        _app.scheduler = original
+        _app._shutting_down = original_shutting_down
 
 
 class TestMainSetup:

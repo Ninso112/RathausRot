@@ -1,24 +1,40 @@
-import os
-import tempfile
 from datetime import datetime, timedelta
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 from rathausrot.scheduler import BotScheduler
 
 
 def make_scheduler(config_overrides=None):
     config = {
-        "matrix": {"homeserver": "https://m.org", "username": "@bot:m.org",
-                    "access_token": "tok", "room_id": "!r:m.org", "room_ids": []},
-        "openrouter": {"api_key": "key", "model": "m", "max_tokens": 100, "system_prompt": ""},
-        "scraper": {"ratsinfo_url": "http://rats.de", "max_pdf_pages": 5,
-                   "request_timeout": 15, "keywords": []},
-        "bot": {"interval_minutes": 360, "party": "Test", "log_level": "INFO",
-               "log_file": "test.log", "allowed_users": [],
-               "relevance_threshold": 1, "healthcheck_port": 0},
+        "matrix": {
+            "homeserver": "https://m.org",
+            "username": "@bot:m.org",
+            "access_token": "tok",
+            "room_id": "!r:m.org",
+            "room_ids": [],
+        },
+        "openrouter": {
+            "api_key": "key",
+            "model": "m",
+            "max_tokens": 100,
+            "system_prompt": "",
+        },
+        "scraper": {
+            "ratsinfo_url": "http://rats.de",
+            "max_pdf_pages": 5,
+            "request_timeout": 15,
+            "keywords": [],
+        },
+        "bot": {
+            "interval_minutes": 360,
+            "party": "Test",
+            "log_level": "INFO",
+            "log_file": "test.log",
+            "allowed_users": [],
+            "relevance_threshold": 1,
+            "healthcheck_port": 0,
+        },
     }
     if config_overrides:
         for k, v in config_overrides.items():
@@ -28,9 +44,11 @@ def make_scheduler(config_overrides=None):
                 config[k] = v
     cm = MagicMock()
     cm.load.return_value = config
-    with patch("rathausrot.scheduler.RunHistoryTracker"), \
-         patch("rathausrot.scheduler.LLMCache"), \
-         patch("rathausrot.scheduler.RetryQueue"):
+    with (
+        patch("rathausrot.scheduler.RunHistoryTracker"),
+        patch("rathausrot.scheduler.LLMCache"),
+        patch("rathausrot.scheduler.RetryQueue"),
+    ):
         scheduler = BotScheduler(cm)
     return scheduler
 
@@ -38,6 +56,7 @@ def make_scheduler(config_overrides=None):
 # ------------------------------------------------------------------ #
 # _should_run_on_startup
 # ------------------------------------------------------------------ #
+
 
 class TestShouldRunOnStartup:
     def test_no_last_run_file(self, tmp_path):
@@ -73,10 +92,12 @@ class TestShouldRunOnStartup:
 # _setup_schedule
 # ------------------------------------------------------------------ #
 
+
 class TestSetupSchedule:
     def test_default_interval(self):
         scheduler = make_scheduler()
         import schedule as sched_lib
+
         sched_lib.clear()
         scheduler._setup_schedule()
         assert len(sched_lib.get_jobs()) == 1
@@ -85,6 +106,7 @@ class TestSetupSchedule:
     def test_custom_interval(self):
         scheduler = make_scheduler({"bot": {"interval_minutes": 120}})
         import schedule as sched_lib
+
         sched_lib.clear()
         scheduler._setup_schedule()
         assert len(sched_lib.get_jobs()) == 1
@@ -93,6 +115,7 @@ class TestSetupSchedule:
     def test_short_interval(self):
         scheduler = make_scheduler({"bot": {"interval_minutes": 30}})
         import schedule as sched_lib
+
         sched_lib.clear()
         scheduler._setup_schedule()
         assert len(sched_lib.get_jobs()) == 1
@@ -102,6 +125,7 @@ class TestSetupSchedule:
 # ------------------------------------------------------------------ #
 # run_pipeline
 # ------------------------------------------------------------------ #
+
 
 class TestRunPipeline:
     def test_no_items_found(self, tmp_path):
@@ -114,9 +138,11 @@ class TestRunPipeline:
 
         scheduler._retry_queue.get_pending.return_value = []
         fake_file = tmp_path / "last_run.txt"
-        with patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper), \
-             patch("rathausrot.scheduler.OpenRouterClient"), \
-             patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+        with (
+            patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper),
+            patch("rathausrot.scheduler.OpenRouterClient"),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
             scheduler.run_pipeline()
 
         scheduler._history.record_run.assert_called_once_with(0, True)
@@ -128,8 +154,15 @@ class TestRunPipeline:
         from rathausrot.scraper import CouncilItem
         from rathausrot.llm_client import LLMResult
 
-        item = CouncilItem(id="t1", title="Test", url="http://x", item_type="item",
-                           date="2024-01-15", body_text="body", source_system="test")
+        item = CouncilItem(
+            id="t1",
+            title="Test",
+            url="http://x",
+            item_type="item",
+            date="2024-01-15",
+            body_text="body",
+            source_system="test",
+        )
         result = LLMResult(summary="Summary", verdict="Zustimmung", relevance_score=4)
 
         mock_scraper = MagicMock()
@@ -143,9 +176,11 @@ class TestRunPipeline:
         scheduler._retry_queue.get_pending.return_value = []
 
         fake_file = tmp_path / "last_run.txt"
-        with patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper), \
-             patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm), \
-             patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+        with (
+            patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper),
+            patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
             scheduler.run_pipeline()
 
         scheduler._history.record_run.assert_called_once_with(1, True)
@@ -158,8 +193,15 @@ class TestRunPipeline:
         from rathausrot.scraper import CouncilItem
         from rathausrot.llm_client import LLMResult
 
-        item = CouncilItem(id="t1", title="Test", url="http://x", item_type="item",
-                           date="", body_text="body", source_system="test")
+        item = CouncilItem(
+            id="t1",
+            title="Test",
+            url="http://x",
+            item_type="item",
+            date="",
+            body_text="body",
+            source_system="test",
+        )
         low_result = LLMResult(summary="Low", relevance_score=2)
 
         mock_scraper = MagicMock()
@@ -173,9 +215,11 @@ class TestRunPipeline:
         scheduler._retry_queue.get_pending.return_value = []
 
         fake_file = tmp_path / "last_run.txt"
-        with patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper), \
-             patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm), \
-             patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+        with (
+            patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper),
+            patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
             scheduler.run_pipeline()
 
         scheduler._history.record_run.assert_called_once_with(0, True)
@@ -186,8 +230,15 @@ class TestRunPipeline:
 
         from rathausrot.scraper import CouncilItem
 
-        item = CouncilItem(id="t1", title="Test", url="http://x", item_type="item",
-                           date="", body_text="body", source_system="test")
+        item = CouncilItem(
+            id="t1",
+            title="Test",
+            url="http://x",
+            item_type="item",
+            date="",
+            body_text="body",
+            source_system="test",
+        )
 
         mock_scraper = MagicMock()
         mock_scraper.fetch_new_items.return_value = iter([item])
@@ -200,9 +251,11 @@ class TestRunPipeline:
         scheduler._retry_queue.get_pending.return_value = []
 
         fake_file = tmp_path / "last_run.txt"
-        with patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper), \
-             patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm), \
-             patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+        with (
+            patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper),
+            patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
             scheduler.run_pipeline()
 
         scheduler._retry_queue.add.assert_called_once_with(item)
@@ -213,8 +266,15 @@ class TestRunPipeline:
 
         from rathausrot.scraper import CouncilItem
 
-        item = CouncilItem(id="t1", title="Test", url="http://x", item_type="item",
-                           date="", body_text="body", source_system="test")
+        item = CouncilItem(
+            id="t1",
+            title="Test",
+            url="http://x",
+            item_type="item",
+            date="",
+            body_text="body",
+            source_system="test",
+        )
 
         mock_scraper = MagicMock()
         mock_scraper.fetch_new_items.return_value = iter([item])
@@ -223,15 +283,21 @@ class TestRunPipeline:
         mock_llm = MagicMock()
 
         scheduler._llm_cache.get.return_value = {
-            "summary": "Cached", "key_points": [], "verdict": "Zustimmung",
-            "verdict_reason": "good", "relevance_score": 3, "tokens_used": 0,
+            "summary": "Cached",
+            "key_points": [],
+            "verdict": "Zustimmung",
+            "verdict_reason": "good",
+            "relevance_score": 3,
+            "tokens_used": 0,
         }
         scheduler._retry_queue.get_pending.return_value = []
 
         fake_file = tmp_path / "last_run.txt"
-        with patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper), \
-             patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm), \
-             patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+        with (
+            patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper),
+            patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
             scheduler.run_pipeline()
 
         mock_llm.analyze_item.assert_not_called()
@@ -244,9 +310,13 @@ class TestRunPipeline:
         scheduler._retry_queue.get_pending.return_value = []
 
         fake_file = tmp_path / "last_run.txt"
-        with patch("rathausrot.scheduler.RatsinfoScraper", side_effect=RuntimeError("boom")), \
-             patch("rathausrot.scheduler.OpenRouterClient"), \
-             patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+        with (
+            patch(
+                "rathausrot.scheduler.RatsinfoScraper", side_effect=RuntimeError("boom")
+            ),
+            patch("rathausrot.scheduler.OpenRouterClient"),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
             scheduler.run_pipeline()
 
         scheduler._history.record_run.assert_called_once_with(0, False, "boom")
@@ -261,9 +331,13 @@ class TestRunPipeline:
         scheduler._retry_queue.get_pending.return_value = []
 
         fake_file = tmp_path / "last_run.txt"
-        with patch("rathausrot.scheduler.RatsinfoScraper", side_effect=RuntimeError("boom")), \
-             patch("rathausrot.scheduler.OpenRouterClient"), \
-             patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+        with (
+            patch(
+                "rathausrot.scheduler.RatsinfoScraper", side_effect=RuntimeError("boom")
+            ),
+            patch("rathausrot.scheduler.OpenRouterClient"),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
             scheduler.run_pipeline()  # Should not raise
 
     def test_pipeline_no_bot(self, tmp_path):
@@ -277,9 +351,11 @@ class TestRunPipeline:
         scheduler._retry_queue.get_pending.return_value = []
 
         fake_file = tmp_path / "last_run.txt"
-        with patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper), \
-             patch("rathausrot.scheduler.OpenRouterClient"), \
-             patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+        with (
+            patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper),
+            patch("rathausrot.scheduler.OpenRouterClient"),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
             scheduler.run_pipeline()  # Should not raise
 
     def test_retry_queue_processed(self, tmp_path):
@@ -289,8 +365,15 @@ class TestRunPipeline:
         from rathausrot.scraper import CouncilItem
         from rathausrot.llm_client import LLMResult
 
-        retry_item = CouncilItem(id="r1", title="Retry", url="http://x",
-                                  item_type="item", date="", body_text="body", source_system="test")
+        retry_item = CouncilItem(
+            id="r1",
+            title="Retry",
+            url="http://x",
+            item_type="item",
+            date="",
+            body_text="body",
+            source_system="test",
+        )
         result = LLMResult(summary="Retried", relevance_score=3)
 
         mock_scraper = MagicMock()
@@ -304,9 +387,11 @@ class TestRunPipeline:
         scheduler._retry_queue.get_pending.return_value = [retry_item]
 
         fake_file = tmp_path / "last_run.txt"
-        with patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper), \
-             patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm), \
-             patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+        with (
+            patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper),
+            patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
             scheduler.run_pipeline()
 
         scheduler._retry_queue.remove.assert_called_once_with("r1")
@@ -318,8 +403,15 @@ class TestRunPipeline:
 
         from rathausrot.scraper import CouncilItem
 
-        retry_item = CouncilItem(id="r1", title="Retry", url="http://x",
-                                  item_type="item", date="", body_text="body", source_system="test")
+        retry_item = CouncilItem(
+            id="r1",
+            title="Retry",
+            url="http://x",
+            item_type="item",
+            date="",
+            body_text="body",
+            source_system="test",
+        )
 
         mock_scraper = MagicMock()
         mock_scraper.fetch_new_items.return_value = iter([])
@@ -331,9 +423,11 @@ class TestRunPipeline:
         scheduler._retry_queue.get_pending.return_value = [retry_item]
 
         fake_file = tmp_path / "last_run.txt"
-        with patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper), \
-             patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm), \
-             patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+        with (
+            patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper),
+            patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
             scheduler.run_pipeline()
 
         scheduler._retry_queue.remove.assert_not_called()
@@ -342,6 +436,7 @@ class TestRunPipeline:
 # ------------------------------------------------------------------ #
 # Utility methods
 # ------------------------------------------------------------------ #
+
 
 class TestUtilityMethods:
     def test_update_last_run(self, tmp_path):
@@ -357,6 +452,7 @@ class TestUtilityMethods:
     def test_get_next_run_time(self):
         scheduler = make_scheduler()
         import schedule as sched_lib
+
         sched_lib.clear()
         # No jobs scheduled
         result = scheduler.get_next_run_time()
@@ -367,6 +463,7 @@ class TestUtilityMethods:
 # ------------------------------------------------------------------ #
 # Stop event
 # ------------------------------------------------------------------ #
+
 
 class TestStopEvent:
     def test_stop_sets_event(self):

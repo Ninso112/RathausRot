@@ -1,7 +1,6 @@
 import os
 import tempfile
 
-import pytest
 import yaml
 
 from rathausrot.config_manager import ConfigManager, DEFAULT_CONFIG
@@ -43,14 +42,34 @@ class TestLoadSave:
         try:
             cm = ConfigManager(config_path=path)
             test_config = {
-                "matrix": {"homeserver": "https://test.com", "username": "@bot:test.com",
-                           "access_token": "tok", "room_id": "!room:test.com", "room_ids": []},
-                "openrouter": {"api_key": "key", "model": "m", "max_tokens": 512, "system_prompt": ""},
-                "scraper": {"ratsinfo_url": "http://rats.de", "max_pdf_pages": 5,
-                           "request_timeout": 15, "keywords": []},
-                "bot": {"interval_minutes": 360, "party": "Test", "log_level": "DEBUG",
-                       "log_file": "test.log", "allowed_users": [],
-                       "relevance_threshold": 1, "healthcheck_port": 0},
+                "matrix": {
+                    "homeserver": "https://test.com",
+                    "username": "@bot:test.com",
+                    "access_token": "tok",
+                    "room_id": "!room:test.com",
+                    "room_ids": [],
+                },
+                "openrouter": {
+                    "api_key": "key",
+                    "model": "m",
+                    "max_tokens": 512,
+                    "system_prompt": "",
+                },
+                "scraper": {
+                    "ratsinfo_url": "http://rats.de",
+                    "max_pdf_pages": 5,
+                    "request_timeout": 15,
+                    "keywords": [],
+                },
+                "bot": {
+                    "interval_minutes": 360,
+                    "party": "Test",
+                    "log_level": "DEBUG",
+                    "log_file": "test.log",
+                    "allowed_users": [],
+                    "relevance_threshold": 1,
+                    "healthcheck_port": 0,
+                },
             }
             cm.save(test_config)
 
@@ -80,12 +99,18 @@ class TestIsConfigured:
 
     def test_configured_with_all_required(self):
         with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False, mode="w") as f:
-            yaml.dump({
-                "matrix": {"homeserver": "https://m.org", "access_token": "tok",
-                           "room_id": "!r:m.org"},
-                "openrouter": {"api_key": "sk-test"},
-                "scraper": {"ratsinfo_url": "http://rats.de"},
-            }, f)
+            yaml.dump(
+                {
+                    "matrix": {
+                        "homeserver": "https://m.org",
+                        "access_token": "tok",
+                        "room_id": "!r:m.org",
+                    },
+                    "openrouter": {"api_key": "sk-test"},
+                    "scraper": {"ratsinfo_url": "http://rats.de"},
+                },
+                f,
+            )
             path = f.name
         try:
             cm = ConfigManager(config_path=path)
@@ -95,11 +120,14 @@ class TestIsConfigured:
 
     def test_missing_homeserver_not_configured(self):
         with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False, mode="w") as f:
-            yaml.dump({
-                "matrix": {"access_token": "tok", "room_id": "!r:m.org"},
-                "openrouter": {"api_key": "sk-test"},
-                "scraper": {"ratsinfo_url": "http://rats.de"},
-            }, f)
+            yaml.dump(
+                {
+                    "matrix": {"access_token": "tok", "room_id": "!r:m.org"},
+                    "openrouter": {"api_key": "sk-test"},
+                    "scraper": {"ratsinfo_url": "http://rats.de"},
+                },
+                f,
+            )
             path = f.name
         try:
             cm = ConfigManager(config_path=path)
@@ -109,11 +137,17 @@ class TestIsConfigured:
 
     def test_missing_ratsinfo_url_not_configured(self):
         with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False, mode="w") as f:
-            yaml.dump({
-                "matrix": {"homeserver": "https://m.org", "access_token": "tok",
-                           "room_id": "!r:m.org"},
-                "openrouter": {"api_key": "sk-test"},
-            }, f)
+            yaml.dump(
+                {
+                    "matrix": {
+                        "homeserver": "https://m.org",
+                        "access_token": "tok",
+                        "room_id": "!r:m.org",
+                    },
+                    "openrouter": {"api_key": "sk-test"},
+                },
+                f,
+            )
             path = f.name
         try:
             cm = ConfigManager(config_path=path)

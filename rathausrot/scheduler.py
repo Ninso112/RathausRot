@@ -3,10 +3,8 @@ import logging
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
 
 import schedule
-import time
 
 from rathausrot.config_manager import ConfigManager, get_cities_from_config
 from rathausrot.scraper import (
@@ -33,7 +31,7 @@ class BotScheduler:
     def __init__(self, config_manager: ConfigManager):
         self.config_manager = config_manager
         self.config = config_manager.load()
-        self._bot: Optional[MatrixBot] = None
+        self._bot: MatrixBot | None = None
         self._history = RunHistoryTracker()
         self._llm_cache = LLMCache()
         self._retry_queue = RetryQueue()
@@ -42,6 +40,16 @@ class BotScheduler:
         self._progress_lock = threading.Lock()
         self._pipeline_progress: dict = {"running": False}
         self._cancel_event = threading.Event()
+
+    @property
+    def history(self) -> RunHistoryTracker:
+        """Public read-only access to the run history tracker for commands."""
+        return self._history
+
+    def _should_send_item(self, result: LLMResult) -> bool:
+        """Check if an item meets the relevance threshold for sending."""
+        relevance_threshold = self.config.get("bot", {}).get("relevance_threshold", 1)
+        return result.relevance_score >= relevance_threshold
 
     def _send_item_report(self, item, result, source_url, city_name, room_ids):
         """Send item report and optional PDF attachments to Matrix rooms."""
@@ -77,10 +85,6 @@ class BotScheduler:
         try:
             llm_client = OpenRouterClient(self.config)
             formatter = MatrixFormatter()
-            relevance_threshold = self.config.get("bot", {}).get(
-                "relevance_threshold", 1
-            )
-            send_pdfs = self.config.get("bot", {}).get("send_pdf_attachments", False)
 
             # Process retry queue first (global, no city context)
             retry_tracker = DuplicateTracker()
@@ -93,7 +97,7 @@ class BotScheduler:
                     continue
                 self._retry_queue.remove(item.id)
                 self._llm_cache.put(item.id, result)
-                if result.relevance_score < relevance_threshold:
+                if not self._should_send_item(result):
                     logger.debug(
                         "Retry item skipped by relevance threshold: %s", item.title
                     )
@@ -182,22 +186,21 @@ class BotScheduler:
                                 self._llm_cache.put(item.id, result)
                         if result is None:
                             logger.warning(
-                                "LLM analysis failed, adding to retry queue: %s", item.id
+                                "LLM analysis failed, adding to retry queue: %s",
+                                item.id,
                             )
                             self._retry_queue.add(item)
                         else:
-                            if result.relevance_score < relevance_threshold:
-                                logger.debug(
-                                    "Item skipped by relevance threshold (%d < %d): %s",
-                                    result.relevance_score,
-                                    relevance_threshold,
-                                    item.title,
-                                )
-                            else:
+                            if self._should_send_item(result):
                                 self._send_item_report(
                                     item, result, source_url, city_name, room_ids
                                 )
                                 item_count += 1
+                            else:
+                                logger.debug(
+                                    "Item skipped by relevance threshold: %s",
+                                    item.title,
+                                )
                             scraper.tracker.mark_processed(item.id)
                         with self._progress_lock:
                             self._pipeline_progress["items_done"] += 1
@@ -267,7 +270,7 @@ class BotScheduler:
         schedule.every(interval_minutes).minutes.do(self.run_pipeline)
         logger.info("Scheduled: every %d minutes", interval_minutes)
 
-    def get_next_run_time(self) -> Optional[datetime]:
+    def get_next_run_time(self) -> datetime | None:
         return schedule.next_run()
 
     def start(self, run_now: bool = False) -> None:
