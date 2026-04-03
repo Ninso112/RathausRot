@@ -1,16 +1,14 @@
-import asyncio
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
-import aiohttp
 import requests
 
 from rathausrot.utils import truncate_text
-from rathausrot.scraper import CouncilItem
+from rathausrot.models import CouncilItem
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +60,11 @@ class OpenRouterClient:
     def analyze_item(self, item: CouncilItem) -> Optional[LLMResult]:
         try:
             system_prompt, user_prompt = self._build_prompt(item)
-            raw = self._complete(system_prompt, user_prompt)
+            raw, tokens = self._complete(system_prompt, user_prompt)
             if not raw:
                 return None
             result = self._parse_response(raw)
+            result.tokens_used = tokens
             return result
         except InsufficientCreditsError:
             raise
@@ -156,19 +155,16 @@ class OpenRouterClient:
                     content = data["choices"][0]["message"]["content"]
                 except (KeyError, IndexError, TypeError) as exc:
                     logger.warning(
-                        "Unexpected LLM response structure (attempt %d): %s",
-                        attempt,
-                        exc,
+                        "Unexpected LLM response structure: %s", exc
                     )
-                    if attempt < len(delays):
-                        time.sleep(delay)
-                    continue
-                return content
+                    break  # Non-transient – retrying won't help
+                return content, tokens
             except (requests.exceptions.RequestException, TimeoutError) as exc:
                 logger.warning("LLM request attempt %d failed: %s", attempt, exc)
                 if attempt < len(delays):
                     time.sleep(delay)
-        return None
+        logger.error("All LLM request attempts exhausted for prompt, returning None")
+        return None, 0
 
     def _parse_response(self, text: str) -> LLMResult:
         # Try direct JSON parse
@@ -242,98 +238,3 @@ class OpenRouterClient:
             logger.warning("Failed to fetch OpenRouter credits: %s", exc)
             return None
 
-    async def analyze_item_async(self, item: CouncilItem) -> Optional[LLMResult]:
-        """Async version of analyze_item for parallel execution."""
-        try:
-            system_prompt, user_prompt = self._build_prompt(item)
-            raw = await self._complete_async(system_prompt, user_prompt)
-            if not raw:
-                return None
-            return self._parse_response(raw)
-        except InsufficientCreditsError:
-            raise
-        except (
-            aiohttp.ClientError,
-            json.JSONDecodeError,
-            KeyError,
-            ValueError,
-        ) as exc:
-            logger.error("analyze_item_async failed for %s: %s", item.id, exc)
-            return None
-        except Exception as exc:
-            logger.error(
-                "analyze_item_async unexpected error for %s: %s", item.id, exc, exc_info=True
-            )
-            return None
-
-    async def _complete_async(self, system: str, user: str) -> Optional[str]:
-        """Async version of _complete using aiohttp."""
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "max_tokens": self.max_tokens,
-        }
-        delays = [5, 15, 45]
-        async with aiohttp.ClientSession() as session:
-            for attempt, delay in enumerate(delays, 1):
-                try:
-                    async with session.post(
-                        self.API_URL,
-                        headers=headers,
-                        json=payload,
-                        timeout=aiohttp.ClientTimeout(total=60),
-                    ) as resp:
-                        if resp.status == 402:
-                            logger.error("OpenRouter credits exhausted (HTTP 402)")
-                            raise InsufficientCreditsError(
-                                "OpenRouter-Guthaben aufgebraucht (HTTP 402). Bitte Credits aufladen."
-                            )
-                        if resp.status in (429, 503):
-                            retry_after = int(resp.headers.get("Retry-After", delay))
-                            logger.warning(
-                                "LLM rate limited (HTTP %d), waiting %ds (attempt %d)",
-                                resp.status,
-                                retry_after,
-                                attempt,
-                            )
-                            if attempt < len(delays):
-                                await asyncio.sleep(retry_after)
-                            continue
-                        resp.raise_for_status()
-                        data = await resp.json()
-                        tokens = data.get("usage", {}).get("total_tokens", 0)
-                        logger.info("LLM tokens used: %d (attempt %d)", tokens, attempt)
-                        try:
-                            return data["choices"][0]["message"]["content"]
-                        except (KeyError, IndexError, TypeError) as exc:
-                            logger.warning("Unexpected LLM response structure: %s", exc)
-                            if attempt < len(delays):
-                                await asyncio.sleep(delay)
-                            continue
-                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                    logger.warning(
-                        "LLM async request attempt %d failed: %s", attempt, exc
-                    )
-                    if attempt < len(delays):
-                        await asyncio.sleep(delay)
-        return None
-
-    async def analyze_items_batch_async(
-        self, items: List[CouncilItem], max_concurrent: int = 5
-    ) -> List[Optional[LLMResult]]:
-        """Analyze multiple items in parallel with concurrency limit."""
-        semaphore = asyncio.Semaphore(max_concurrent)
-
-        async def analyze_with_limit(item: CouncilItem) -> Optional[LLMResult]:
-            async with semaphore:
-                return await self.analyze_item_async(item)
-
-        tasks = [analyze_with_limit(item) for item in items]
-        return await asyncio.gather(*tasks)

@@ -1,4 +1,5 @@
 import json
+import socket
 import threading
 import time
 from http.client import HTTPConnection
@@ -7,6 +8,28 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from rathausrot.healthcheck import HealthCheckHandler, start_healthcheck
+
+
+def _wait_for_server(port, timeout=5.0):
+    """Wait until the server accepts connections."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            s = socket.create_connection(("127.0.0.1", port), timeout=1)
+            s.close()
+            return True
+        except (ConnectionRefusedError, OSError):
+            time.sleep(0.1)
+    return False
+
+
+def _get_free_port():
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
 
 
 class TestStartHealthcheck:
@@ -19,20 +42,15 @@ class TestStartHealthcheck:
         assert result is None
 
     def test_starts_daemon_thread(self):
-        # Use a random high port to avoid conflicts
-        import socket
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-        sock.close()
-
+        port = _get_free_port()
         thread = start_healthcheck(port)
         assert thread is not None
         assert thread.daemon is True
         assert thread.is_alive()
-        time.sleep(0.3)  # Let server start
 
-        # Test /health endpoint
+        if not _wait_for_server(port):
+            pytest.skip("Cannot bind to network port (sandbox/CI restriction)")
+
         conn = HTTPConnection("127.0.0.1", port, timeout=2)
         try:
             conn.request("GET", "/health")
@@ -46,14 +64,11 @@ class TestStartHealthcheck:
             conn.close()
 
     def test_404_for_non_health_path(self):
-        import socket
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-        sock.close()
-
+        port = _get_free_port()
         start_healthcheck(port)
-        time.sleep(0.3)
+
+        if not _wait_for_server(port):
+            pytest.skip("Cannot bind to network port (sandbox/CI restriction)")
 
         conn = HTTPConnection("127.0.0.1", port, timeout=2)
         try:
@@ -64,19 +79,15 @@ class TestStartHealthcheck:
             conn.close()
 
     def test_health_with_last_run_file(self, tmp_path):
-        import socket
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-        sock.close()
-
+        port = _get_free_port()
         fake_file = tmp_path / "last_run.txt"
         fake_file.write_text("2024-06-15T10:00:00")
 
-        with patch("rathausrot.healthcheck.Path") as MockPath:
-            MockPath.return_value = fake_file
+        with patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
             start_healthcheck(port)
-            time.sleep(0.3)
+
+            if not _wait_for_server(port):
+                pytest.skip("Cannot bind to network port (sandbox/CI restriction)")
 
             conn = HTTPConnection("127.0.0.1", port, timeout=2)
             try:

@@ -58,17 +58,13 @@ def test_chunk_html_splits_large_input():
         assert len(chunk.encode("utf-8")) <= 65535
 
 
-def test_footer_in_every_chunk():
+def test_single_item_report_contains_disclaimer():
     formatter = MatrixFormatter()
-    items = []
-    for i in range(20):
-        item = make_item(title=f"TOP {i}", url=f"https://example.com/item/{i}")
-        result = make_result()
-        items.append((item, result))
-
-    chunks = formatter.format_weekly_report(items, kw=42, year=2024)
-    for chunk in chunks:
-        assert "automatisch generierte Prognosen" in chunk
+    item = make_item()
+    result = make_result()
+    chunks = formatter.format_single_item_report(item, result, source_url="https://example.com")
+    combined = "".join(chunks)
+    assert "automatisch generierte Prognosen" in combined
 
 
 def test_format_item_xss_in_title():

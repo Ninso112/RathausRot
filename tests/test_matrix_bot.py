@@ -114,32 +114,13 @@ class TestStartupShutdown:
 class TestClose:
     def test_close_no_client(self):
         bot = MatrixBot(make_config())
-        bot.close()  # Should not raise
-        assert bot._client is None
+        bot.close()  # Should not raise (no-op)
 
-    def test_close_with_client(self):
+    def test_close_is_noop(self):
         bot = MatrixBot(make_config())
         mock_client = MagicMock()
-
-        async def mock_close():
-            pass
-
-        mock_client.close = mock_close
         bot._client = mock_client
-        bot.close()
-        assert bot._client is None
-
-    def test_close_handles_error(self):
-        bot = MatrixBot(make_config())
-        mock_client = MagicMock()
-
-        async def mock_close():
-            raise RuntimeError("close failed")
-
-        mock_client.close = mock_close
-        bot._client = mock_client
-        bot.close()  # Should not raise
-        assert bot._client is None
+        bot.close()  # close() is a no-op since clients are per-call
 
 
 # ------------------------------------------------------------------ #
@@ -158,27 +139,21 @@ class TestRunSync:
 
 
 # ------------------------------------------------------------------ #
-# _get_client
+# _new_client
 # ------------------------------------------------------------------ #
 
-class TestGetClient:
-    def test_creates_client_on_first_call(self):
+class TestNewClient:
+    def test_creates_new_client(self):
         bot = MatrixBot(make_config())
         mock_nio = MagicMock()
         mock_client = MagicMock()
         mock_nio.AsyncClient.return_value = mock_client
 
         with patch.dict("sys.modules", {"nio": mock_nio}):
-            client = bot._get_client()
+            client = bot._new_client()
 
         assert client is mock_client
-        assert bot._client is mock_client
-
-    def test_reuses_client(self):
-        bot = MatrixBot(make_config())
-        mock_client = MagicMock()
-        bot._client = mock_client
-        assert bot._get_client() is mock_client
+        mock_nio.AsyncClient.assert_called_once()
 
 
 # ------------------------------------------------------------------ #
@@ -243,15 +218,12 @@ class TestSendMessage:
         mock_nio = MagicMock()
         mock_client = MagicMock()
 
-        async def mock_room_send(**kwargs):
-            return MagicMock()  # not RoomSendError
-
         mock_client.room_send = AsyncMock(return_value=MagicMock())
+        mock_client.close = AsyncMock()
         mock_nio.AsyncClient.return_value = mock_client
         mock_nio.RoomSendError = type("RoomSendError", (), {})
 
         with patch.dict("sys.modules", {"nio": mock_nio}):
-            bot._client = None  # Force _get_client
             bot.send_message("<p>Hello</p>")
 
         mock_client.room_send.assert_called_once()
@@ -267,14 +239,13 @@ class TestSendMessage:
 
         error_resp = FakeRoomSendError()
         mock_client.room_send = AsyncMock(return_value=error_resp)
+        mock_client.close = AsyncMock()
         mock_nio.AsyncClient.return_value = mock_client
         mock_nio.RoomSendError = FakeRoomSendError
 
         with patch.dict("sys.modules", {"nio": mock_nio}):
-            bot._client = None
             bot.send_message("<p>Hello</p>")
 
-        # Should have logged an error but not raised
         mock_client.room_send.assert_called_once()
 
     def test_send_message_no_rooms(self):
@@ -286,6 +257,7 @@ class TestSendMessage:
         mock_nio = MagicMock()
         mock_client = MagicMock()
         mock_client.room_send = AsyncMock()
+        mock_client.close = AsyncMock()
         mock_nio.AsyncClient.return_value = mock_client
 
         with patch.dict("sys.modules", {"nio": mock_nio}):

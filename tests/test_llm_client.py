@@ -95,8 +95,9 @@ class TestComplete:
         mock_resp.raise_for_status = MagicMock()
 
         with patch("requests.post", return_value=mock_resp):
-            result = client._complete("system", "user")
+            result, tokens = client._complete("system", "user")
         assert result == "test content"
+        assert tokens == 42
 
     def test_malformed_response_retries(self):
         client = make_client()
@@ -106,8 +107,9 @@ class TestComplete:
 
         with patch("requests.post", return_value=bad_resp):
             with patch("time.sleep"):
-                result = client._complete("system", "user")
+                result, tokens = client._complete("system", "user")
         assert result is None
+        assert tokens == 0
 
     def test_request_exception_retries(self):
         import requests as req
@@ -115,8 +117,9 @@ class TestComplete:
 
         with patch("requests.post", side_effect=req.exceptions.Timeout("timeout")):
             with patch("time.sleep"):
-                result = client._complete("system", "user")
+                result, tokens = client._complete("system", "user")
         assert result is None
+        assert tokens == 0
 
 
 class TestCustomSystemPrompt:

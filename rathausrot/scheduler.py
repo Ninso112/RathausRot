@@ -56,11 +56,15 @@ class BotScheduler:
         if send_pdfs:
             for pdf_url in item.pdf_urls:
                 fname = pdf_url.rstrip("/").split("/")[-1] or "dokument.pdf"
-                self._bot.send_file(pdf_url, fname)
+                self._bot.send_file(pdf_url, fname, room_ids=room_ids)
 
     def run_pipeline(self, force: bool = False) -> None:
         logger.info("Starting pipeline run (force=%s)", force)
         item_count = 0
+        with self._progress_lock:
+            if self._pipeline_progress.get("running"):
+                logger.warning("Pipeline already running, skipping")
+                return
         self._cancel_event.clear()
         with self._progress_lock:
             self._pipeline_progress = {
@@ -133,72 +137,72 @@ class BotScheduler:
                     city_config["openrouter"]["system_prompt"] = city["system_prompt"]
 
                 scraper = RatsinfoScraper(city_config, city_name=city_name)
+                try:
+                    # Session announcements
+                    sessions = scraper.fetch_sessions()
+                    new_sessions = self._item_store.get_new_sessions(sessions)
+                    for session in new_sessions:
+                        logger.info("New session announced: %s", session.title)
+                        msg = formatter.format_session_announcement(session)
+                        if self._bot is not None:
+                            self._bot.send_message(msg, room_ids=room_ids)
+                        self._item_store.mark_session_announced(session)
 
-                # Session announcements
-                sessions = scraper.fetch_sessions()
-                new_sessions = self._item_store.get_new_sessions(sessions)
-                for session in new_sessions:
-                    logger.info("New session announced: %s", session.title)
-                    msg = formatter.format_session_announcement(session)
-                    if self._bot is not None:
-                        self._bot.send_message(msg, room_ids=room_ids)
-                    self._item_store.mark_session_announced(session)
-
-                total = scraper.count_upcoming_items()
-                with self._progress_lock:
-                    current_total = self._pipeline_progress.get("items_total") or 0
-                    self._pipeline_progress["items_total"] = (
-                        (current_total + total) if total else current_total or None
-                    )
-
-                for item in scraper.fetch_new_items(force=force):
-                    if self._cancel_event.is_set():
-                        logger.info("Pipeline cancelled by user")
-                        break
-                    self._item_store.store(item)
+                    total = scraper.count_upcoming_items()
                     with self._progress_lock:
-                        self._pipeline_progress["current_item"] = item.title
-                    logger.info("Analyzing item: %s", item.title)
-                    cached = self._llm_cache.get(item.id)
-                    if cached is not None:
-                        logger.info("LLM cache hit for item: %s", item.id)
-                        try:
-                            result = LLMResult(**cached)
-                        except Exception as cache_exc:
-                            logger.warning(
-                                "Corrupt cache entry for %s, re-analyzing: %s",
-                                item.id,
-                                cache_exc,
-                            )
-                            result = llm_client.analyze_item(item)
-                            self._llm_cache.put(item.id, result)
-                    else:
-                        result = llm_client.analyze_item(item)
-                        if result is not None:
-                            self._llm_cache.put(item.id, result)
-                    if result is None:
-                        logger.warning(
-                            "LLM analysis failed, adding to retry queue: %s", item.id
+                        current_total = self._pipeline_progress.get("items_total") or 0
+                        self._pipeline_progress["items_total"] = (
+                            (current_total + total) if total else current_total or None
                         )
-                        self._retry_queue.add(item)
-                    else:
-                        if result.relevance_score < relevance_threshold:
-                            logger.debug(
-                                "Item skipped by relevance threshold (%d < %d): %s",
-                                result.relevance_score,
-                                relevance_threshold,
-                                item.title,
-                            )
-                        else:
-                            self._send_item_report(
-                                item, result, source_url, city_name, room_ids
-                            )
-                            item_count += 1
-                        scraper.tracker.mark_processed(item.id)
-                    with self._progress_lock:
-                        self._pipeline_progress["items_done"] += 1
 
-                scraper.close()
+                    for item in scraper.fetch_new_items(force=force):
+                        if self._cancel_event.is_set():
+                            logger.info("Pipeline cancelled by user")
+                            break
+                        self._item_store.store(item)
+                        with self._progress_lock:
+                            self._pipeline_progress["current_item"] = item.title
+                        logger.info("Analyzing item: %s", item.title)
+                        cached = self._llm_cache.get(item.id)
+                        if cached is not None:
+                            logger.info("LLM cache hit for item: %s", item.id)
+                            try:
+                                result = LLMResult(**cached)
+                            except Exception as cache_exc:
+                                logger.warning(
+                                    "Corrupt cache entry for %s, re-analyzing: %s",
+                                    item.id,
+                                    cache_exc,
+                                )
+                                result = llm_client.analyze_item(item)
+                                self._llm_cache.put(item.id, result)
+                        else:
+                            result = llm_client.analyze_item(item)
+                            if result is not None:
+                                self._llm_cache.put(item.id, result)
+                        if result is None:
+                            logger.warning(
+                                "LLM analysis failed, adding to retry queue: %s", item.id
+                            )
+                            self._retry_queue.add(item)
+                        else:
+                            if result.relevance_score < relevance_threshold:
+                                logger.debug(
+                                    "Item skipped by relevance threshold (%d < %d): %s",
+                                    result.relevance_score,
+                                    relevance_threshold,
+                                    item.title,
+                                )
+                            else:
+                                self._send_item_report(
+                                    item, result, source_url, city_name, room_ids
+                                )
+                                item_count += 1
+                            scraper.tracker.mark_processed(item.id)
+                        with self._progress_lock:
+                            self._pipeline_progress["items_done"] += 1
+                finally:
+                    scraper.close()
 
             if item_count == 0:
                 logger.info("No new items found")
@@ -234,6 +238,8 @@ class BotScheduler:
             with self._progress_lock:
                 self._pipeline_progress["running"] = False
                 self._pipeline_progress["current_item"] = ""
+                self._pipeline_progress["items_done"] = 0
+                self._pipeline_progress["items_total"] = None
 
     def cancel_pipeline(self) -> None:
         self._cancel_event.set()

@@ -3,7 +3,7 @@ import logging
 from typing import List, Optional, Tuple
 
 from rathausrot.utils import chunk_html, strip_html
-from rathausrot.scraper import CouncilItem, Session
+from rathausrot.models import CouncilItem, Session
 from rathausrot.llm_client import LLMResult
 
 logger = logging.getLogger(__name__)

@@ -4,7 +4,6 @@ import threading
 import time
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -14,7 +13,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     """Simple HTTP handler for health check endpoint."""
 
     scheduler_ref = None
-    _start_time: float = time.time()
+    _start_time: float = 0.0
 
     def do_GET(self):
         if self.path == "/calendar.ics":
@@ -25,11 +24,12 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
+        from rathausrot.scheduler import LAST_RUN_FILE
+
         last_run = None
-        last_run_file = Path("last_run.txt")
-        if last_run_file.exists():
+        if LAST_RUN_FILE.exists():
             try:
-                last_run = last_run_file.read_text().strip()
+                last_run = LAST_RUN_FILE.read_text().strip()
             except Exception:
                 pass
 
@@ -115,10 +115,11 @@ def start_healthcheck(port: int, scheduler_ref=None) -> Optional[threading.Threa
         return None
 
     HealthCheckHandler.scheduler_ref = scheduler_ref
+    HealthCheckHandler._start_time = time.time()
 
     def _run():
         try:
-            server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+            server = HTTPServer(("127.0.0.1", port), HealthCheckHandler)
             logger.info("Health check server started on port %d", port)
             server.serve_forever()
         except Exception as exc:

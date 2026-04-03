@@ -35,7 +35,7 @@ class TestLoadSave:
         cm = ConfigManager(config_path="/tmp/nonexistent_rathausrot_test.yaml")
         config = cm.load()
         assert config["matrix"]["homeserver"] == ""
-        assert config["bot"]["interval_hours"] == 168
+        assert config["bot"]["interval_minutes"] == 360
 
     def test_save_and_load_roundtrip(self):
         with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as f:
@@ -48,16 +48,16 @@ class TestLoadSave:
                 "openrouter": {"api_key": "key", "model": "m", "max_tokens": 512, "system_prompt": ""},
                 "scraper": {"ratsinfo_url": "http://rats.de", "max_pdf_pages": 5,
                            "request_timeout": 15, "keywords": []},
-                "bot": {"interval_hours": 24, "schedule_day": "monday", "schedule_time": "09:00",
-                       "party": "Test", "log_level": "DEBUG", "log_file": "test.log",
-                       "allowed_users": [], "relevance_threshold": 1, "healthcheck_port": 0},
+                "bot": {"interval_minutes": 360, "party": "Test", "log_level": "DEBUG",
+                       "log_file": "test.log", "allowed_users": [],
+                       "relevance_threshold": 1, "healthcheck_port": 0},
             }
             cm.save(test_config)
 
             cm2 = ConfigManager(config_path=path)
             loaded = cm2.load()
             assert loaded["matrix"]["homeserver"] == "https://test.com"
-            assert loaded["bot"]["interval_hours"] == 24
+            assert loaded["bot"]["interval_minutes"] == 360
         finally:
             os.unlink(path)
 
@@ -125,7 +125,7 @@ class TestIsConfigured:
 class TestGet:
     def test_get_nested(self):
         cm = ConfigManager(config_path="/tmp/nonexistent_rathausrot_test3.yaml")
-        assert cm.get("bot", "interval_hours") == 168
+        assert cm.get("bot", "interval_minutes") == 360
 
     def test_get_missing_returns_default(self):
         cm = ConfigManager(config_path="/tmp/nonexistent_rathausrot_test4.yaml")

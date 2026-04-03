@@ -91,6 +91,13 @@ class ConfigManager:
             self._config = self._deep_merge(DEFAULT_CONFIG, user_config)
         else:
             self._config = dict(DEFAULT_CONFIG)
+        # Environment variable overrides for secrets
+        env_token = os.environ.get("MATRIX_ACCESS_TOKEN")
+        if env_token:
+            self._config.setdefault("matrix", {})["access_token"] = env_token
+        env_api_key = os.environ.get("OPENROUTER_API_KEY")
+        if env_api_key:
+            self._config.setdefault("openrouter", {})["api_key"] = env_api_key
         return self._config
 
     def save(self, config: dict) -> None:
@@ -121,7 +128,12 @@ class ConfigManager:
         api_key = config.get("openrouter", {}).get("api_key", "")
         ratsinfo_url = config.get("scraper", {}).get("ratsinfo_url", "")
         has_room = bool(room_id or room_ids)
-        return bool(token and api_key and homeserver and has_room and ratsinfo_url)
+        # Multi-city configs may have per-city ratsinfo_urls without a global one
+        cities = config.get("cities", [])
+        has_ratsinfo = bool(ratsinfo_url) or any(
+            c.get("ratsinfo_url") for c in cities
+        )
+        return bool(token and api_key and homeserver and has_room and has_ratsinfo)
 
     def get_cities(self) -> List[dict]:
         """Return normalized city list. Falls back to global config if cities: [] is absent."""

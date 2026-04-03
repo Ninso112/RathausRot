@@ -162,7 +162,7 @@ class TestStatusCommand:
         handler._scrape_running = True
         with patch("rathausrot.scheduler.LAST_RUN_FILE", MagicMock(exists=MagicMock(return_value=False))):
             result = handler._cmd_status("@user:example.com", "!status")
-        assert "läuft gerade" in result
+        assert "Scrape läuft" in result
 
 
 # ------------------------------------------------------------------ #
@@ -220,30 +220,16 @@ class TestNaechsteCommand:
 
 
 # ------------------------------------------------------------------ #
-# Zusammenfassung Command
+# Kalender Command
 # ------------------------------------------------------------------ #
 
-class TestZusammenfassungCommand:
-    def test_no_report(self):
+class TestKalenderCommand:
+    def test_kalender_no_items(self):
         handler = make_handler()
-        result = handler.handle("@user:example.com", "!zusammenfassung")
-        assert "Kein Bericht" in result
-
-    def test_no_send_extra(self):
-        handler = make_handler()
-        handler._send_extra = None
-        handler.scheduler_ref.get_last_report_chunks.return_value = ["<p>chunk</p>"]
-        result = handler.handle("@user:example.com", "!zusammenfassung")
-        assert "Senderfunktion" in result
-
-    def test_sends_report(self):
-        handler = make_handler()
-        handler._send_extra = MagicMock()
-        handler.scheduler_ref.get_last_report_chunks.return_value = ["<p>Report</p>"]
-        result = handler.handle("@user:example.com", "!zusammenfassung")
-        assert "wird gesendet" in result
-        time.sleep(0.1)  # Let thread run
-        handler._send_extra.assert_called_once_with(["<p>Report</p>"])
+        with patch("rathausrot.scraper.CouncilItemStore") as MockStore:
+            MockStore.return_value.get_all_as_items.return_value = []
+            result = handler.handle("@user:example.com", "!kalender")
+        assert "Keine Termine" in result
 
 
 # ------------------------------------------------------------------ #
@@ -347,30 +333,15 @@ class TestLogCommand:
 
 
 # ------------------------------------------------------------------ #
-# Export Command
+# Config Command
 # ------------------------------------------------------------------ #
 
-class TestExportCommand:
-    def test_export_no_report(self):
+class TestConfigCommand:
+    def test_config_shows_settings(self):
         handler = make_handler()
-        result = handler.handle("@user:example.com", "!export")
-        assert "Kein Bericht" in result
-
-    def test_export_no_send_extra(self):
-        handler = make_handler()
-        handler._send_extra = None
-        handler.scheduler_ref.get_last_report_chunks.return_value = ["<p>Report</p>"]
-        result = handler.handle("@user:example.com", "!export")
-        assert "Senderfunktion" in result
-
-    def test_export_sends(self):
-        handler = make_handler()
-        handler._send_extra = MagicMock()
-        handler.scheduler_ref.get_last_report_chunks.return_value = ["<p>Report data</p>"]
-        result = handler.handle("@user:example.com", "!export")
-        assert "exportiert" in result
-        time.sleep(0.1)
-        handler._send_extra.assert_called_once()
+        result = handler.handle("@user:example.com", "!config")
+        assert "Konfiguration" in result
+        assert "SPD" in result
 
 
 # ------------------------------------------------------------------ #

@@ -1,9 +1,9 @@
-import re
 import logging
-from datetime import date, datetime
-from typing import List, Optional
+from datetime import timedelta
+from typing import List
 
-from rathausrot.scraper import CouncilItem
+from rathausrot.models import CouncilItem
+from rathausrot.utils import parse_german_date
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,10 @@ def generate_ics(items: List[CouncilItem]) -> bytes:
     cal.add("x-wr-calname", "RathausRot – Stadtrat")
 
     for item in items:
+        dt = parse_german_date(item.date)
+        if dt is None:
+            continue  # Skip items without parseable dates
+
         event = Event()
         event.add("uid", f"{item.id}@rathausrot")
         event.add("summary", item.title)
@@ -29,28 +33,8 @@ def generate_ics(items: List[CouncilItem]) -> bytes:
             event.add("url", item.url)
         if item.city_name:
             event.add("location", item.city_name)
-
-        dt = _parse_item_date(item.date)
-        if dt is not None:
-            event.add("dtstart", dt)
-            event.add("dtend", dt)
-        else:
-            today = date.today()
-            event.add("dtstart", today)
-            event.add("dtend", today)
-
+        event.add("dtstart", dt)
+        event.add("dtend", dt + timedelta(hours=1))
         cal.add_component(event)
 
     return cal.to_ical()
-
-
-def _parse_item_date(date_str: str) -> Optional[date]:
-    if not date_str:
-        return None
-    cleaned = re.sub(r'^[A-Za-z\u00c0-\u024f]+,\s*', '', date_str.strip())
-    for fmt in ("%d.%m.%Y %H:%M Uhr", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
-        try:
-            return datetime.strptime(cleaned, fmt).date()
-        except ValueError:
-            continue
-    return None

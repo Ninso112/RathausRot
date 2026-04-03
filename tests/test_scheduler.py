@@ -16,9 +16,9 @@ def make_scheduler(config_overrides=None):
         "openrouter": {"api_key": "key", "model": "m", "max_tokens": 100, "system_prompt": ""},
         "scraper": {"ratsinfo_url": "http://rats.de", "max_pdf_pages": 5,
                    "request_timeout": 15, "keywords": []},
-        "bot": {"interval_hours": 168, "schedule_day": "monday", "schedule_time": "08:00",
-               "party": "Test", "log_level": "INFO", "log_file": "test.log",
-               "allowed_users": [], "relevance_threshold": 1, "healthcheck_port": 0},
+        "bot": {"interval_minutes": 360, "party": "Test", "log_level": "INFO",
+               "log_file": "test.log", "allowed_users": [],
+               "relevance_threshold": 1, "healthcheck_port": 0},
     }
     if config_overrides:
         for k, v in config_overrides.items():
@@ -74,24 +74,24 @@ class TestShouldRunOnStartup:
 # ------------------------------------------------------------------ #
 
 class TestSetupSchedule:
-    def test_daily_schedule(self):
-        scheduler = make_scheduler({"bot": {"schedule_day": "daily", "schedule_time": "09:00"}})
+    def test_default_interval(self):
+        scheduler = make_scheduler()
         import schedule as sched_lib
         sched_lib.clear()
         scheduler._setup_schedule()
         assert len(sched_lib.get_jobs()) == 1
         sched_lib.clear()
 
-    def test_weekly_schedule(self):
-        scheduler = make_scheduler({"bot": {"schedule_day": "wednesday", "schedule_time": "10:00"}})
+    def test_custom_interval(self):
+        scheduler = make_scheduler({"bot": {"interval_minutes": 120}})
         import schedule as sched_lib
         sched_lib.clear()
         scheduler._setup_schedule()
         assert len(sched_lib.get_jobs()) == 1
         sched_lib.clear()
 
-    def test_invalid_day_falls_back_to_monday(self):
-        scheduler = make_scheduler({"bot": {"schedule_day": "notaday", "schedule_time": "08:00"}})
+    def test_short_interval(self):
+        scheduler = make_scheduler({"bot": {"interval_minutes": 30}})
         import schedule as sched_lib
         sched_lib.clear()
         scheduler._setup_schedule()
@@ -150,7 +150,6 @@ class TestRunPipeline:
 
         scheduler._history.record_run.assert_called_once_with(1, True)
         scheduler._bot.send_chunks.assert_called_once()
-        assert len(scheduler._last_report_chunks) > 0
 
     def test_relevance_threshold_filters_items(self, tmp_path):
         scheduler = make_scheduler({"bot": {"relevance_threshold": 4}})
@@ -354,12 +353,6 @@ class TestUtilityMethods:
         content = fake_file.read_text()
         # Should be a valid ISO datetime
         datetime.fromisoformat(content)
-
-    def test_get_last_report_chunks(self):
-        scheduler = make_scheduler()
-        assert scheduler.get_last_report_chunks() == []
-        scheduler._last_report_chunks = ["<p>test</p>"]
-        assert scheduler.get_last_report_chunks() == ["<p>test</p>"]
 
     def test_get_next_run_time(self):
         scheduler = make_scheduler()
