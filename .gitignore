@@ -37,6 +37,11 @@ htmlcov/
 # Claude Code
 .claude/
 
+# OpenClaude
+.openclaude*
+*.openclaude
+.openclaude/
+
 # IDEs & Editoren
 .vscode/
 .idea/
