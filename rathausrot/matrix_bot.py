@@ -255,30 +255,38 @@ class MatrixBot:
             client.next_batch = init_resp.next_batch
 
             async def _on_message(room, event):
-                if not isinstance(event, nio.RoomMessageText):
-                    return
-                if room.room_id not in self._room_ids_set:
-                    return
-                # Ignore events that were sent before this bot instance started
-                if event.server_timestamp < startup_ts_ms:
-                    logger.debug("Ignoring pre-startup event from %s", event.sender)
-                    return
-                response_html = command_handler.handle(event.sender, event.body)
-                if response_html is None:
-                    return
-                plain = strip_html(response_html)
-                send_resp = await client.room_send(
-                    room_id=room.room_id,
-                    message_type="m.room.message",
-                    content={
-                        "msgtype": "m.text",
-                        "body": plain,
-                        "format": "org.matrix.custom.html",
-                        "formatted_body": response_html,
-                    },
-                )
-                if isinstance(send_resp, nio.RoomSendError):
-                    logger.error("Failed to send command response: %s", send_resp)
+                try:
+                    if not isinstance(event, nio.RoomMessageText):
+                        return
+                    if room.room_id not in self._room_ids_set:
+                        return
+                    # Ignore events that were sent before this bot instance started
+                    if event.server_timestamp < startup_ts_ms:
+                        logger.debug("Ignoring pre-startup event from %s", event.sender)
+                        return
+                    response_html = command_handler.handle(event.sender, event.body)
+                    if response_html is None:
+                        return
+                    plain = strip_html(response_html)
+                    send_resp = await client.room_send(
+                        room_id=room.room_id,
+                        message_type="m.room.message",
+                        content={
+                            "msgtype": "m.text",
+                            "body": plain,
+                            "format": "org.matrix.custom.html",
+                            "formatted_body": response_html,
+                        },
+                    )
+                    if isinstance(send_resp, nio.RoomSendError):
+                        logger.error("Failed to send command response: %s", send_resp)
+                except Exception as exc:
+                    logger.error(
+                        "Unhandled error in _on_message for %s: %s",
+                        getattr(event, "sender", "unknown"),
+                        exc,
+                        exc_info=True,
+                    )
 
             client.add_event_callback(_on_message, nio.RoomMessageText)
             logger.info("Command listener ready – listening for commands")

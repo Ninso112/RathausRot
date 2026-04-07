@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import sqlite3
@@ -12,29 +13,31 @@ DEFAULT_DB_PATH = "processed_items.db"
 
 
 class DatabaseManager:
-    """Centralized database connection manager with pooling."""
+    """Centralized database connection manager with thread-local connections."""
 
-    _pools: dict = {}
+    _local = threading.local()
     _lock = threading.Lock()
 
     @classmethod
     def get_connection(cls, db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
-        if db_path not in cls._pools:
-            with cls._lock:
-                if db_path not in cls._pools:
-                    conn = sqlite3.connect(db_path, check_same_thread=False)
-                    conn.execute("PRAGMA journal_mode=WAL")
-                    conn.execute("PRAGMA synchronous=NORMAL")
-                    conn.execute("PRAGMA cache_size=-64000")
-                    cls._pools[db_path] = conn
-        return cls._pools[db_path]
+        if not hasattr(cls._local, "connections"):
+            cls._local.connections = {}
+        if db_path not in cls._local.connections:
+            conn = sqlite3.connect(db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA cache_size=-64000")
+            cls._local.connections[db_path] = conn
+        return cls._local.connections[db_path]
 
     @classmethod
     def close_all(cls) -> None:
-        with cls._lock:
-            for conn in cls._pools.values():
-                conn.close()
-            cls._pools.clear()
+        """Schließt alle Connections des aktuellen Threads."""
+        if hasattr(cls._local, "connections"):
+            for conn in cls._local.connections.values():
+                with contextlib.suppress(Exception):
+                    conn.close()
+            cls._local.connections.clear()
 
 
 class DuplicateTracker:
@@ -158,22 +161,30 @@ class RetryQueue:
                 )
                 return
             conn.execute(
-                "INSERT OR REPLACE INTO retry_queue (item_id, item_json, attempts) "
-                "VALUES (?, ?, ?)",
+                "INSERT INTO retry_queue (item_id, item_json, attempts) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(item_id) DO UPDATE SET "
+                "attempts = excluded.attempts, "
+                "item_json = excluded.item_json",
                 (item.id, json.dumps(asdict(item)), new_attempts),
             )
             conn.commit()
 
-    def get_pending(self, max_attempts: int = 3) -> list:
+    def get_pending(self, max_attempts: int = 3) -> list[CouncilItem]:
         with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT item_json FROM retry_queue WHERE attempts < ? ORDER BY added_at",
+                "SELECT item_id, item_json FROM retry_queue WHERE attempts < ? ORDER BY added_at",
                 (max_attempts,),
             ).fetchall()
-        items = []
-        for row in rows:
-            data = json.loads(row[0])
-            items.append(CouncilItem(**data))
+        items: list[CouncilItem] = []
+        for item_id, item_json in rows:
+            try:
+                data = json.loads(item_json)
+                items.append(CouncilItem(**data))
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                logger.error("Corrupt retry queue entry %s, removing: %s", item_id, exc)
+                with contextlib.suppress(Exception):
+                    self.remove(item_id)
         return items
 
     def remove(self, item_id: str) -> None:

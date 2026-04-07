@@ -132,11 +132,20 @@ class OpenRouterClient:
         for attempt, delay in enumerate(delays, 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                logger.error("LLM request aborted: overall timeout of %ds exceeded", max_total_seconds)
+                logger.error(
+                    "LLM request aborted: overall timeout of %ds exceeded",
+                    max_total_seconds,
+                )
                 break
             try:
+                timeout = min(60, remaining)
+                if timeout <= 0:
+                    logger.error(
+                        "LLM request aborted: no time remaining before request"
+                    )
+                    break
                 resp = requests.post(
-                    self.API_URL, headers=headers, json=payload, timeout=min(60, remaining)
+                    self.API_URL, headers=headers, json=payload, timeout=timeout
                 )
                 if resp.status_code == 402:
                     logger.error("OpenRouter credits exhausted (HTTP 402)")

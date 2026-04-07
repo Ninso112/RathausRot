@@ -146,7 +146,7 @@ class RatsinfoScraper:
                 self._detected_system = "unknown"
         except (requests.RequestException, ValueError, AttributeError) as exc:
             logger.warning("detect_system error: %s", exc)
-            self._detected_system = "unknown"
+            return "unknown"
         return self._detected_system
 
     def count_upcoming_items(self) -> int | None:
@@ -402,6 +402,9 @@ class RatsinfoScraper:
             for pdf_link in detail_soup.find_all("a", href=True):
                 if pdf_link["href"].lower().endswith(".pdf"):
                     pdf_url = urljoin(url, pdf_link["href"])
+                    if not _is_safe_url(pdf_url):
+                        logger.warning("Skipping unsafe PDF URL: %s", pdf_url)
+                        continue
                     pdf_urls.append(pdf_url)
                     try:
                         text = self._extract_pdf_text(pdf_url, self.max_pdf_pages)

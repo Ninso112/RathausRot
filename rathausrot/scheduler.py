@@ -1,3 +1,4 @@
+import copy
 import html
 import logging
 import threading
@@ -94,7 +95,15 @@ class BotScheduler:
                 if result is None:
                     logger.warning("Retry failed for item: %s", item.id)
                     continue
-                self._retry_queue.remove(item.id)
+                try:
+                    self._retry_queue.remove(item.id)
+                except Exception as remove_exc:
+                    logger.error(
+                        "Failed to remove item %s from retry queue: %s – skipping to avoid duplicate send",
+                        item.id,
+                        remove_exc,
+                    )
+                    continue
                 self._llm_cache.put(item.id, result)
                 if not self._should_send_item(result):
                     logger.debug(
@@ -129,11 +138,9 @@ class BotScheduler:
                 )
 
                 # Build per-city config (override scraper URL and keywords)
-                city_config = {
-                    **self.config,
-                    "scraper": {**self.config.get("scraper", {})},
-                    "openrouter": {**self.config.get("openrouter", {})},
-                }
+                city_config = copy.deepcopy(self.config)
+                city_config.setdefault("scraper", {})
+                city_config.setdefault("openrouter", {})
                 city_config["scraper"]["ratsinfo_url"] = source_url
                 city_config["scraper"]["keywords"] = city.get("keywords", [])
                 if city.get("system_prompt"):
@@ -207,7 +214,9 @@ class BotScheduler:
                     try:
                         scraper.close()
                     except Exception as close_exc:
-                        logger.warning("Error closing scraper for %s: %s", city_name, close_exc)
+                        logger.warning(
+                            "Error closing scraper for %s: %s", city_name, close_exc
+                        )
 
             if item_count == 0:
                 logger.info("No new items found")
