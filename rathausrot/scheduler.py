@@ -73,8 +73,7 @@ class BotScheduler:
             if self._pipeline_progress.get("running"):
                 logger.warning("Pipeline already running, skipping")
                 return
-        self._cancel_event.clear()
-        with self._progress_lock:
+            self._cancel_event.clear()
             self._pipeline_progress = {
                 "running": True,
                 "items_done": 0,
@@ -205,7 +204,10 @@ class BotScheduler:
                         with self._progress_lock:
                             self._pipeline_progress["items_done"] += 1
                 finally:
-                    scraper.close()
+                    try:
+                        scraper.close()
+                    except Exception as close_exc:
+                        logger.warning("Error closing scraper for %s: %s", city_name, close_exc)
 
             if item_count == 0:
                 logger.info("No new items found")

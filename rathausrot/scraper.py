@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import logging
 import re
 from datetime import date
@@ -44,10 +45,33 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _ALLOWED_SCHEMES = {"http", "https"}
+_BLOCKED_HOSTS = frozenset({"localhost", "ip6-localhost", "ip6-loopback"})
+_PRIVATE_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
 
 
 def _is_safe_url(url: str) -> bool:
-    return urlparse(url).scheme in _ALLOWED_SCHEMES
+    parsed = urlparse(url)
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        return False
+    host = parsed.hostname or ""
+    if not host or host.lower() in _BLOCKED_HOSTS:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+        if any(addr in net for net in _PRIVATE_NETWORKS):
+            return False
+    except ValueError:
+        pass
+    return True
 
 
 class RatsinfoScraper:

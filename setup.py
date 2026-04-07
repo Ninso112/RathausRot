@@ -11,7 +11,7 @@ setup(
     description="Kommunalpolitik-Bot für Matrix – automatische Analyse von Ratssitzungen",
     author="RathausRot Contributors",
     license="GPLv3",
-    python_requires=">=3.9",
+    python_requires=">=3.11",
     packages=find_packages(),
     install_requires=install_requires,
     entry_points={
@@ -22,6 +22,7 @@ setup(
     classifiers=[
         "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.9",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
     ],
 )

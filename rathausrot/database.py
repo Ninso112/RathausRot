@@ -143,12 +143,24 @@ class RetryQueue:
             )
             conn.commit()
 
-    def add(self, item: CouncilItem) -> None:
+    def add(self, item: CouncilItem, max_attempts: int = 3) -> None:
         with DatabaseManager.get_connection(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT attempts FROM retry_queue WHERE item_id = ?", (item.id,)
+            ).fetchone()
+            current_attempts = row[0] if row else 0
+            new_attempts = current_attempts + 1
+            if new_attempts > max_attempts:
+                logger.warning(
+                    "RetryQueue: Item %s hat maximale Versuche (%d) erreicht, wird verworfen",
+                    item.id,
+                    max_attempts,
+                )
+                return
             conn.execute(
                 "INSERT OR REPLACE INTO retry_queue (item_id, item_json, attempts) "
-                "VALUES (?, ?, COALESCE((SELECT attempts FROM retry_queue WHERE item_id = ?), 0) + 1)",
-                (item.id, json.dumps(asdict(item)), item.id),
+                "VALUES (?, ?, ?)",
+                (item.id, json.dumps(asdict(item)), new_attempts),
             )
             conn.commit()
 
@@ -191,6 +203,14 @@ class CouncilItemStore:
                 "(id TEXT PRIMARY KEY, title TEXT, date TEXT, url TEXT, "
                 "announced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_council_items_title "
+                "ON council_items (title)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_council_items_stored_at "
+                "ON council_items (stored_at DESC)"
+            )
             conn.commit()
 
     def store(self, item: CouncilItem) -> None:
@@ -232,23 +252,24 @@ class CouncilItemStore:
             for r in rows
         ]
 
+    _SQLITE_BATCH_SIZE = 500
+
     def get_new_sessions(self, sessions: list[Session]) -> list[Session]:
         """Return sessions not yet in known_sessions."""
         if not sessions:
             return []
-        new = []
         session_ids = [s.id for s in sessions]
+        known_ids: set = set()
         with DatabaseManager.get_connection(self.db_path) as conn:
-            placeholders = ",".join("?" * len(session_ids))
-            rows = conn.execute(
-                f"SELECT id FROM known_sessions WHERE id IN ({placeholders})",
-                session_ids,
-            ).fetchall()
-            known_ids = {row[0] for row in rows}
-        for s in sessions:
-            if s.id not in known_ids:
-                new.append(s)
-        return new
+            for i in range(0, len(session_ids), self._SQLITE_BATCH_SIZE):
+                batch = session_ids[i : i + self._SQLITE_BATCH_SIZE]
+                placeholders = ",".join("?" * len(batch))
+                rows = conn.execute(
+                    f"SELECT id FROM known_sessions WHERE id IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                known_ids.update(row[0] for row in rows)
+        return [s for s in sessions if s.id not in known_ids]
 
     def mark_session_announced(self, session: Session) -> None:
         with DatabaseManager.get_connection(self.db_path) as conn:

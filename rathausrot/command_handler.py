@@ -129,7 +129,7 @@ class CommandHandler:
         parts = body.split(None, 1)
         if len(parts) < 2 or not parts[1].strip():
             return "<p>Verwendung: <code>!suche &lt;Suchbegriff&gt;</code></p>"
-        query = parts[1].strip()
+        query = parts[1].strip()[:200]
         from rathausrot.scraper import CouncilItemStore
 
         results = CouncilItemStore().search(query, limit=10)

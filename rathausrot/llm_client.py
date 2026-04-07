@@ -126,10 +126,17 @@ class OpenRouterClient:
             "max_tokens": self.max_tokens,
         }
         delays = [5, 15, 45]
+        max_total_seconds = 180
+        max_retry_after = 60
+        deadline = time.monotonic() + max_total_seconds
         for attempt, delay in enumerate(delays, 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.error("LLM request aborted: overall timeout of %ds exceeded", max_total_seconds)
+                break
             try:
                 resp = requests.post(
-                    self.API_URL, headers=headers, json=payload, timeout=60
+                    self.API_URL, headers=headers, json=payload, timeout=min(60, remaining)
                 )
                 if resp.status_code == 402:
                     logger.error("OpenRouter credits exhausted (HTTP 402)")
@@ -137,7 +144,10 @@ class OpenRouterClient:
                         "OpenRouter-Guthaben aufgebraucht (HTTP 402). Bitte Credits aufladen."
                     )
                 if resp.status_code in (429, 503):
-                    retry_after = int(resp.headers.get("Retry-After", delay))
+                    retry_after = min(
+                        int(resp.headers.get("Retry-After", delay)),
+                        max_retry_after,
+                    )
                     logger.warning(
                         "LLM rate limited (HTTP %d), waiting %ds (attempt %d)",
                         resp.status_code,
@@ -145,7 +155,9 @@ class OpenRouterClient:
                         attempt,
                     )
                     if attempt < len(delays):
-                        time.sleep(retry_after)
+                        sleep_time = min(retry_after, deadline - time.monotonic())
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
@@ -160,11 +172,21 @@ class OpenRouterClient:
             except (requests.exceptions.RequestException, TimeoutError) as exc:
                 logger.warning("LLM request attempt %d failed: %s", attempt, exc)
                 if attempt < len(delays):
-                    time.sleep(delay)
+                    sleep_time = min(delay, deadline - time.monotonic())
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
         logger.error("All LLM request attempts exhausted for prompt, returning None")
         return None, 0
 
     def _parse_response(self, text: str) -> LLMResult:
+        max_response_chars = 50_000
+        if len(text) > max_response_chars:
+            logger.warning(
+                "LLM response unexpectedly large (%d chars), truncating to %d",
+                len(text),
+                max_response_chars,
+            )
+            text = text[:max_response_chars]
         # Try direct JSON parse
         try:
             data = json.loads(text.strip())

@@ -14,7 +14,7 @@ RATSINFO_USER_AGENT = (
 class MemoryLogHandler(logging.Handler):
     """Ring-buffer handler that keeps the last max_entries log entries in RAM."""
 
-    def __init__(self, max_entries: int = 500):
+    def __init__(self, max_entries: int = 2000):
         super().__init__()
         self._buffer: deque = deque(maxlen=max_entries)
 
@@ -56,7 +56,7 @@ def setup_logging(
     sh.setFormatter(formatter)
     root.addHandler(sh)
 
-    _memory_handler = MemoryLogHandler(max_entries=500)
+    _memory_handler = MemoryLogHandler(max_entries=2000)
     _memory_handler.setFormatter(formatter)
     root.addHandler(_memory_handler)
 
