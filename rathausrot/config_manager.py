@@ -105,10 +105,12 @@ class ConfigManager:
         # Environment variable overrides for secrets
         env_token = os.environ.get("MATRIX_ACCESS_TOKEN")
         if env_token:
-            self._config.setdefault("matrix", {})["access_token"] = env_token
+            self._config.setdefault("matrix", {})
+            self._config["matrix"]["access_token"] = env_token
         env_api_key = os.environ.get("OPENROUTER_API_KEY")
         if env_api_key:
-            self._config.setdefault("openrouter", {})["api_key"] = env_api_key
+            self._config.setdefault("openrouter", {})
+            self._config["openrouter"]["api_key"] = env_api_key
         return self._config
 
     def save(self, config: dict) -> None:

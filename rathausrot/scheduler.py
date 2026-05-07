@@ -162,7 +162,9 @@ class BotScheduler:
                     with self._progress_lock:
                         current_total = self._pipeline_progress.get("items_total") or 0
                         self._pipeline_progress["items_total"] = (
-                            (current_total + total) if total else current_total or None
+                            (current_total or 0) + total
+                            if total is not None
+                            else (current_total or None)
                         )
 
                     for item in scraper.fetch_new_items(force=force):
@@ -297,6 +299,7 @@ class BotScheduler:
             send_extra=self._bot.send_chunks,
             send_file_bytes=self._bot.send_bytes_as_file,
         )
+        self._bot._command_handler_ref = command_handler
         self._bot.start_command_listener(command_handler)
 
         try:

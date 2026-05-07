@@ -291,7 +291,8 @@ class CouncilItemStore:
             conn.commit()
 
     def search(self, query: str, limit: int = 10) -> list[dict]:
-        pattern = f"%{query}%"
+        escaped = query.replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
         with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT item_id, title, url, date, source_system, stored_at "

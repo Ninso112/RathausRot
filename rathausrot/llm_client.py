@@ -112,7 +112,7 @@ class OpenRouterClient:
         )
         return system, user
 
-    def _complete(self, system: str, user: str) -> str | None:
+    def _complete(self, system: str, user: str) -> tuple[str | None, int]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",

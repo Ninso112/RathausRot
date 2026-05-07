@@ -95,6 +95,7 @@ def run_wizard(config_manager) -> None:
         interval_minutes = int(interval_str)
     except ValueError:
         interval_minutes = 360
+    interval_minutes = max(1, interval_minutes)
     party = prompt("Deine Partei (z.B. Die Linke)")
     relevance_str = prompt("Relevanz-Schwellenwert (1–5, 1 = alles)", "1")
     try:
@@ -228,6 +229,7 @@ def run_edit_wizard(config_manager) -> None:
         interval_minutes = int(interval_str)
     except ValueError:
         interval_minutes = b.get("interval_minutes", 360)
+    interval_minutes = max(1, interval_minutes)
     party = prompt("Partei", b.get("party", "Die Linke"))
     relevance_str = prompt(
         "Relevanz-Schwellenwert (1–5)", str(b.get("relevance_threshold", 1))
