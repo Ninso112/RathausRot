@@ -1,5 +1,5 @@
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from rathausrot.models import CouncilItem
 from rathausrot.utils import parse_german_date
@@ -34,8 +34,11 @@ def generate_ics(items: list[CouncilItem]) -> bytes:
             event.add("url", item.url)
         if item.city_name:
             event.add("location", item.city_name)
-        event.add("dtstart", dt)
-        event.add("dtend", dt + timedelta(hours=1))
+        # parse_german_date returns a date object; convert to datetime
+        # so we can add a timedelta in hours without a TypeError.
+        dt_start = datetime.combine(dt, datetime.min.time())
+        event.add("dtstart", dt_start)
+        event.add("dtend", dt_start + timedelta(hours=1))
         cal.add_component(event)
 
     return cal.to_ical()

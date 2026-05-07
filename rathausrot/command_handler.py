@@ -460,9 +460,9 @@ class CommandHandler:
                 "<p>❌ Guthaben konnte nicht abgefragt werden.</p>"
                 "<p><em>Hinweis: Eventuell wird ein Management-API-Key benötigt.</em></p>"
             )
-        balance = credits["balance"]
-        total = credits["total_credits"]
-        usage = credits["total_usage"]
+        balance = credits.get("balance", 0.0)
+        total = credits.get("total_credits", 0.0)
+        usage = credits.get("total_usage", 0.0)
         icon = "✅" if balance > 1.0 else ("⚠️" if balance > 0 else "❌")
         return (
             f"<p><strong>💰 OpenRouter-Guthaben</strong></p>"

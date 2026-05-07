@@ -231,7 +231,7 @@ class OpenRouterClient:
             score = int(data.get("relevance_score", 3))
         except (ValueError, TypeError):
             score = 3
-        raw_kps = data.get("key_points", [])
+        raw_kps = data.get("key_points") or []
         key_points = []
         for kp in raw_kps:
             if isinstance(kp, str):

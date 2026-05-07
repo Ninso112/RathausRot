@@ -36,8 +36,6 @@ class MatrixBot:
 
     def _ensure_send_loop(self) -> asyncio.AbstractEventLoop:
         """Start a background event loop thread if not already running."""
-        if self._loop is not None and self._loop.is_running():
-            return self._loop
         with self._send_lock:
             if self._loop is not None and self._loop.is_running():
                 return self._loop
@@ -221,7 +219,9 @@ class MatrixBot:
             self._send_client = None
         if self._loop is not None and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._loop.stop)
-            self._loop = None
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            self._loop_thread.join(timeout=10)
+        self._loop = None
 
     def run_sync(self, coro):
         return asyncio.run(coro)

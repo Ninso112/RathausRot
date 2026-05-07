@@ -302,7 +302,12 @@ class BotScheduler:
         try:
             if run_now or self._should_run_on_startup():
                 logger.info("Running pipeline immediately")
-                self.run_pipeline()
+                try:
+                    self.run_pipeline()
+                except Exception as exc:
+                    logger.error(
+                        "Initial pipeline run failed: %s", exc, exc_info=True
+                    )
 
             self._setup_schedule()
 
