@@ -99,7 +99,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             logger.error("Calendar endpoint error: %s", exc)
             self.send_response(500)
             self.end_headers()
-            self.wfile.write(str(exc).encode("utf-8"))
+            self.wfile.write(b"Internal server error")
 
     def log_message(self, format, *args):
         # Suppress default stderr logging

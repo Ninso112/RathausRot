@@ -89,11 +89,13 @@ class BotScheduler:
             # Process retry queue first (global, no city context)
             retry_tracker = DuplicateTracker()
             source_url_global = self.config.get("scraper", {}).get("ratsinfo_url", "")
-            for item in self._retry_queue.get_pending():
+            max_retry_attempts = 3
+            for item in self._retry_queue.get_pending(max_attempts=max_retry_attempts):
                 logger.info("Retrying item from queue: %s", item.title)
                 result = llm_client.analyze_item(item)
                 if result is None:
                     logger.warning("Retry failed for item: %s", item.id)
+                    self._retry_queue.add(item, max_attempts=max_retry_attempts)
                     continue
                 try:
                     self._retry_queue.remove(item.id)
@@ -198,6 +200,7 @@ class BotScheduler:
                                 item.id,
                             )
                             self._retry_queue.add(item)
+                            scraper.tracker.mark_processed(item.id)
                         else:
                             if self._should_send_item(result):
                                 self._send_item_report(
