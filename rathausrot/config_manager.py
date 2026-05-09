@@ -1,3 +1,4 @@
+import copy
 import os
 import tempfile
 import logging
@@ -97,10 +98,12 @@ class ConfigManager:
         if self._config is None:
             if self.config_path.exists():
                 with open(self.config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-                self._config = self._deep_merge(DEFAULT_CONFIG, user_config)
+                    user_config = yaml.safe_load(f)
+                if not isinstance(user_config, dict):
+                    user_config = {}
+                self._config = self._deep_merge(copy.deepcopy(DEFAULT_CONFIG), user_config)
             else:
-                self._config = dict(DEFAULT_CONFIG)
+                self._config = copy.deepcopy(DEFAULT_CONFIG)
         # Environment variable overrides for secrets (applied on every call)
         env_token = os.environ.get("MATRIX_ACCESS_TOKEN")
         if env_token:
