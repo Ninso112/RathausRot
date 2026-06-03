@@ -98,9 +98,14 @@ class RatsinfoScraper:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         self._detected_system: str | None = None
+        # Run-scoped cache for index/list pages that are fetched repeatedly
+        # within a single pipeline run (e.g. base_url and /vorlagen). Detail
+        # pages have unique URLs and are intentionally not cached.
+        self._index_cache: dict[str, BeautifulSoup | None] = {}
 
     def close(self):
         """Close the HTTP session and release connection pool resources."""
+        self._index_cache.clear()
         self.session.close()
 
     def __enter__(self):
@@ -132,7 +137,7 @@ class RatsinfoScraper:
         if not self.base_url:
             return "unknown"
         try:
-            resp = self._fetch_page(self.base_url)
+            resp = self._fetch_index_page(self.base_url)
             if resp is None:
                 return "unknown"
             text = str(resp)
@@ -158,7 +163,7 @@ class RatsinfoScraper:
 
     def _count_sternberg_upcoming(self) -> int | None:
         vorlagen_url = urljoin(self.base_url, "/vorlagen")
-        soup = self._fetch_page(vorlagen_url)
+        soup = self._fetch_index_page(vorlagen_url)
         if soup is None:
             return None
         table = soup.find(class_="vorlagenübersicht") or soup.find(
@@ -215,7 +220,7 @@ class RatsinfoScraper:
     def _fetch_and_parse(
         self, selectors: list, source_system: str, force: bool = False
     ) -> Iterator[CouncilItem]:
-        soup = self._fetch_page(self.base_url)
+        soup = self._fetch_index_page(self.base_url)
         if soup is None:
             return
         for selector in selectors:
@@ -251,7 +256,7 @@ class RatsinfoScraper:
 
     def _fetch_sternberg(self, force: bool = False) -> Iterator[CouncilItem]:
         vorlagen_url = urljoin(self.base_url, "/vorlagen")
-        soup = self._fetch_page(vorlagen_url)
+        soup = self._fetch_index_page(vorlagen_url)
         if soup is None:
             return
         table = soup.find(class_="vorlagenübersicht") or soup.find(
@@ -341,7 +346,7 @@ class RatsinfoScraper:
         )
 
     def _fetch_generic(self, force: bool = False) -> Iterator[CouncilItem]:
-        soup = self._fetch_page(self.base_url)
+        soup = self._fetch_index_page(self.base_url)
         if soup is None:
             return
         for a in soup.find_all("a", href=True):
@@ -436,6 +441,20 @@ class RatsinfoScraper:
             logger.warning("Request error fetching %s: %s", url, exc)
         return None
 
+    def _fetch_index_page(self, url: str) -> BeautifulSoup | None:
+        """Fetch an index/list page, reusing the result within a single run.
+
+        Index pages (base_url, /vorlagen, /sitzungen) are requested by several
+        stages (system detection, session listing, item listing) of the same
+        run; caching avoids redundant HTTP round trips against slow council
+        systems. The cached soup is only read, never mutated.
+        """
+        if url in self._index_cache:
+            return self._index_cache[url]
+        soup = self._fetch_page(url)
+        self._index_cache[url] = soup
+        return soup
+
     def _extract_pdf_text(self, pdf_url: str, max_pages: int) -> str:
         try:
             import pdfplumber
@@ -480,7 +499,7 @@ class RatsinfoScraper:
 
     def _fetch_sessions_sternberg(self) -> list[Session]:
         sitzungen_url = urljoin(self.base_url, "/sitzungen")
-        soup = self._fetch_page(sitzungen_url)
+        soup = self._fetch_index_page(sitzungen_url)
         if soup is None:
             return []
         sessions = []
@@ -516,7 +535,7 @@ class RatsinfoScraper:
         return sessions
 
     def _fetch_sessions_sessionnet(self) -> list[Session]:
-        soup = self._fetch_page(self.base_url)
+        soup = self._fetch_index_page(self.base_url)
         if soup is None:
             return []
         sessions = []

@@ -319,6 +319,38 @@ def test_fetch_page_success():
     assert "Hello" in result.get_text()
 
 
+def test_fetch_index_page_caches_within_run():
+    """Index pages must be fetched over HTTP only once per scraper instance."""
+    scraper = _make_scraper()
+    from bs4 import BeautifulSoup
+
+    mock_soup = BeautifulSoup("<html><body>idx</body></html>", "html.parser")
+    with patch.object(
+        scraper, "_fetch_page", return_value=mock_soup
+    ) as mock_fetch:
+        first = scraper._fetch_index_page("http://example.com/vorlagen")
+        second = scraper._fetch_index_page("http://example.com/vorlagen")
+    assert first is second
+    mock_fetch.assert_called_once()
+
+
+def test_fetch_index_page_caches_none_results():
+    """A failed fetch is cached too, so a failing endpoint is not hammered."""
+    scraper = _make_scraper()
+    with patch.object(scraper, "_fetch_page", return_value=None) as mock_fetch:
+        assert scraper._fetch_index_page("http://example.com/x") is None
+        assert scraper._fetch_index_page("http://example.com/x") is None
+    mock_fetch.assert_called_once()
+
+
+def test_close_clears_index_cache():
+    scraper = _make_scraper()
+    scraper._index_cache["http://example.com"] = object()
+    with patch.object(scraper.session, "close"):
+        scraper.close()
+    assert scraper._index_cache == {}
+
+
 def test_detect_system_sessionnet():
     scraper = _make_scraper()
     from bs4 import BeautifulSoup
