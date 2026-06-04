@@ -1,10 +1,12 @@
 import copy
 import os
+import re
 import tempfile
 import logging
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -39,9 +41,88 @@ DEFAULT_CONFIG = {
         "relevance_threshold": 1,
         "healthcheck_port": 0,
         "send_pdf_attachments": False,
+        "data_retention_days": 180,
+        "failure_alert_threshold": 3,
     },
     "cities": [],
 }
+
+
+def _is_http_url(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+    except (ValueError, AttributeError):
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def validate_config(config: dict) -> list[str]:
+    """Return a list of human-readable problems found in `config` (empty = valid)."""
+    errors: list[str] = []
+    matrix = config.get("matrix", {}) or {}
+    openrouter = config.get("openrouter", {}) or {}
+    scraper = config.get("scraper", {}) or {}
+    bot = config.get("bot", {}) or {}
+
+    homeserver = matrix.get("homeserver", "")
+    if not homeserver:
+        errors.append("matrix.homeserver fehlt.")
+    elif not _is_http_url(homeserver):
+        errors.append(
+            f"matrix.homeserver ist keine gültige http(s)-URL: {homeserver!r}"
+        )
+
+    username = matrix.get("username", "")
+    if not username:
+        errors.append("matrix.username fehlt.")
+    elif not re.match(r"^@[^:]+:.+$", username):
+        errors.append(
+            f"matrix.username muss das Format @name:server haben: {username!r}"
+        )
+
+    if not matrix.get("access_token"):
+        errors.append("matrix.access_token fehlt (Setup-Wizard ausführen).")
+
+    if not (matrix.get("room_id") or matrix.get("room_ids")):
+        errors.append("Kein Matrix-Raum konfiguriert (room_id oder room_ids).")
+
+    if not openrouter.get("api_key"):
+        errors.append("openrouter.api_key fehlt.")
+
+    max_tokens = openrouter.get("max_tokens", 1024)
+    if not isinstance(max_tokens, int) or max_tokens <= 0:
+        errors.append("openrouter.max_tokens muss eine positive Ganzzahl sein.")
+
+    cities = config.get("cities", []) or []
+    base_url = scraper.get("ratsinfo_url", "")
+    has_any_ratsinfo = bool(base_url) or any(c.get("ratsinfo_url") for c in cities)
+    if not has_any_ratsinfo:
+        errors.append("scraper.ratsinfo_url fehlt (und keine Stadt hat eine URL).")
+    if base_url and not _is_http_url(base_url):
+        errors.append(
+            f"scraper.ratsinfo_url ist keine gültige http(s)-URL: {base_url!r}"
+        )
+    for city in cities:
+        url = city.get("ratsinfo_url", "")
+        if url and not _is_http_url(url):
+            name = city.get("name", "?")
+            errors.append(
+                f"cities[{name}].ratsinfo_url ist keine gültige http(s)-URL: {url!r}"
+            )
+
+    threshold = bot.get("relevance_threshold", 1)
+    if not isinstance(threshold, int) or not 1 <= threshold <= 5:
+        errors.append("bot.relevance_threshold muss zwischen 1 und 5 liegen.")
+
+    interval = bot.get("interval_minutes", 360)
+    if not isinstance(interval, int) or interval <= 0:
+        errors.append("bot.interval_minutes muss eine positive Ganzzahl sein.")
+
+    port = bot.get("healthcheck_port", 0)
+    if not isinstance(port, int) or not 0 <= port <= 65535:
+        errors.append("bot.healthcheck_port muss zwischen 0 und 65535 liegen.")
+
+    return errors
 
 
 def get_cities_from_config(config: dict) -> list[dict]:
@@ -101,7 +182,9 @@ class ConfigManager:
                     user_config = yaml.safe_load(f)
                 if not isinstance(user_config, dict):
                     user_config = {}
-                self._config = self._deep_merge(copy.deepcopy(DEFAULT_CONFIG), user_config)
+                self._config = self._deep_merge(
+                    copy.deepcopy(DEFAULT_CONFIG), user_config
+                )
             else:
                 self._config = copy.deepcopy(DEFAULT_CONFIG)
         # Environment variable overrides for secrets (applied on every call)

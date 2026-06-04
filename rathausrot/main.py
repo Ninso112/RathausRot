@@ -55,6 +55,11 @@ def main():
         "--run-now", action="store_true", help="Pipeline sofort ausführen"
     )
     parser.add_argument("--test", action="store_true", help="Testnachricht senden")
+    parser.add_argument(
+        "--check-config",
+        action="store_true",
+        help="Konfiguration validieren und beenden",
+    )
     parser.add_argument("--version", action="store_true", help="Version anzeigen")
     args = parser.parse_args()
 
@@ -76,6 +81,18 @@ def main():
         from rathausrot.setup_wizard import run_wizard
 
         run_wizard(config_manager)
+        sys.exit(0)
+
+    if args.check_config:
+        from rathausrot.config_manager import validate_config
+
+        problems = validate_config(config_manager.load())
+        if problems:
+            print("Konfiguration ungültig:")
+            for problem in problems:
+                print(f"  - {problem}")
+            sys.exit(1)
+        print("Konfiguration ist gültig.")
         sys.exit(0)
 
     if not config_manager.is_configured():

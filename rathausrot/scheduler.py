@@ -22,10 +22,19 @@ from rathausrot.formatter import MatrixFormatter
 from rathausrot.matrix_bot import MatrixBot
 from rathausrot.command_handler import CommandHandler
 from rathausrot.healthcheck import start_healthcheck
+from rathausrot.database import cleanup_old_entries
 
 logger = logging.getLogger(__name__)
 
 LAST_RUN_FILE = Path("last_run.txt")
+
+
+def _safe_tokens(result) -> int:
+    """Extract a non-negative token count from a result, tolerating mocks/None."""
+    try:
+        return max(0, int(getattr(result, "tokens_used", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 class BotScheduler:
@@ -70,6 +79,7 @@ class BotScheduler:
     def run_pipeline(self, force: bool = False) -> None:
         logger.info("Starting pipeline run (force=%s)", force)
         item_count = 0
+        total_tokens = 0
         with self._progress_lock:
             if self._pipeline_progress.get("running"):
                 logger.warning("Pipeline already running, skipping")
@@ -107,6 +117,7 @@ class BotScheduler:
                     )
                     continue
                 self._llm_cache.put(item.id, result)
+                total_tokens += _safe_tokens(result)
                 if not self._should_send_item(result):
                     logger.debug(
                         "Retry item skipped by relevance threshold: %s", item.title
@@ -202,6 +213,7 @@ class BotScheduler:
                             self._retry_queue.add(item)
                             scraper.tracker.mark_processed(item.id)
                         else:
+                            total_tokens += _safe_tokens(result)
                             if self._should_send_item(result):
                                 self._send_item_report(
                                     item, result, source_url, city_name, room_ids
@@ -227,11 +239,16 @@ class BotScheduler:
                 logger.info("No new items found")
 
             self._update_last_run()
-            self._history.record_run(item_count, True)
-            logger.info("Pipeline completed: %d items processed", item_count)
+            self._history.record_run(item_count, True, tokens=total_tokens)
+            logger.info(
+                "Pipeline completed: %d items processed, %d tokens used",
+                item_count,
+                total_tokens,
+            )
+            self._maybe_cleanup()
         except InsufficientCreditsError as exc:
             logger.error("Credits exhausted: %s", exc)
-            self._history.record_run(item_count, False, str(exc))
+            self._history.record_run(item_count, False, str(exc), tokens=total_tokens)
             if self._bot is not None:
                 try:
                     self._bot.send_message(
@@ -242,9 +259,10 @@ class BotScheduler:
                     )
                 except Exception as send_exc:
                     logger.error("Could not send credit warning: %s", send_exc)
+            self._maybe_send_failure_alert()
         except Exception as exc:
             logger.error("Pipeline error: %s", exc, exc_info=True)
-            self._history.record_run(item_count, False, str(exc))
+            self._history.record_run(item_count, False, str(exc), tokens=total_tokens)
             if self._bot is not None:
                 try:
                     self._bot.send_message(
@@ -253,12 +271,47 @@ class BotScheduler:
                     )
                 except Exception as send_exc:
                     logger.error("Could not send error message: %s", send_exc)
+            self._maybe_send_failure_alert()
         finally:
             with self._progress_lock:
                 self._pipeline_progress["running"] = False
                 self._pipeline_progress["current_item"] = ""
                 self._pipeline_progress["items_done"] = 0
                 self._pipeline_progress["items_total"] = None
+
+    def _maybe_cleanup(self) -> None:
+        """Run time-based retention cleanup if enabled in the config."""
+        days = self.config.get("bot", {}).get("data_retention_days", 180)
+        if not days or days <= 0:
+            return
+        try:
+            cleanup_old_entries(days=days, vacuum=False)
+        except Exception as exc:
+            logger.warning("Database cleanup failed: %s", exc)
+
+    def _maybe_send_failure_alert(self) -> None:
+        """Notify the room when runs have failed `failure_alert_threshold` times in a row."""
+        threshold = self.config.get("bot", {}).get("failure_alert_threshold", 3)
+        if not threshold or threshold <= 0 or self._bot is None:
+            return
+        try:
+            consecutive = self._history.get_consecutive_failures()
+        except Exception as exc:
+            logger.warning("Could not determine consecutive failures: %s", exc)
+            return
+        # Alert exactly once when the streak first reaches the threshold.
+        if consecutive != threshold:
+            return
+        try:
+            self._bot.send_message(
+                f"<p>🚨 <strong>RathausRot: {consecutive} Läufe in Folge fehlgeschlagen</strong></p>"
+                "<p>Der Bot konnte mehrfach hintereinander keine Daten verarbeiten. "
+                "Mögliche Ursachen: geändertes Ratsinfo-System, Netzwerkproblem oder "
+                "aufgebrauchtes OpenRouter-Guthaben. Bitte prüfe die Logs "
+                "(<code>!log error</code>) und das Guthaben (<code>!guthaben</code>).</p>"
+            )
+        except Exception as send_exc:
+            logger.error("Could not send failure alert: %s", send_exc)
 
     def cancel_pipeline(self) -> None:
         self._cancel_event.set()
@@ -311,9 +364,7 @@ class BotScheduler:
                 try:
                     self.run_pipeline()
                 except Exception as exc:
-                    logger.error(
-                        "Initial pipeline run failed: %s", exc, exc_info=True
-                    )
+                    logger.error("Initial pipeline run failed: %s", exc, exc_info=True)
 
             self._setup_schedule()
 

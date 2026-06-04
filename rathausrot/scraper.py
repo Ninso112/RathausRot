@@ -102,10 +102,15 @@ class RatsinfoScraper:
         # within a single pipeline run (e.g. base_url and /vorlagen). Detail
         # pages have unique URLs and are intentionally not cached.
         self._index_cache: dict[str, BeautifulSoup | None] = {}
+        # Run-scoped cache for extracted PDF text. The same PDF may be linked
+        # from several items; downloading + parsing it once per run avoids the
+        # most expensive operation (network + pdfplumber) being repeated.
+        self._pdf_text_cache: dict[str, str] = {}
 
     def close(self):
         """Close the HTTP session and release connection pool resources."""
         self._index_cache.clear()
+        self._pdf_text_cache.clear()
         self.session.close()
 
     def __enter__(self):
@@ -456,6 +461,14 @@ class RatsinfoScraper:
         return soup
 
     def _extract_pdf_text(self, pdf_url: str, max_pages: int) -> str:
+        if pdf_url in self._pdf_text_cache:
+            logger.debug("PDF text cache hit: %s", pdf_url)
+            return self._pdf_text_cache[pdf_url]
+        text = self._extract_pdf_text_uncached(pdf_url, max_pages)
+        self._pdf_text_cache[pdf_url] = text
+        return text
+
+    def _extract_pdf_text_uncached(self, pdf_url: str, max_pages: int) -> str:
         try:
             import pdfplumber
         except ImportError:

@@ -325,9 +325,7 @@ def test_fetch_index_page_caches_within_run():
     from bs4 import BeautifulSoup
 
     mock_soup = BeautifulSoup("<html><body>idx</body></html>", "html.parser")
-    with patch.object(
-        scraper, "_fetch_page", return_value=mock_soup
-    ) as mock_fetch:
+    with patch.object(scraper, "_fetch_page", return_value=mock_soup) as mock_fetch:
         first = scraper._fetch_index_page("http://example.com/vorlagen")
         second = scraper._fetch_index_page("http://example.com/vorlagen")
     assert first is second
@@ -660,3 +658,23 @@ def test_extract_pdf_text_truncates_to_max_pages():
 
     assert "Page 3 content" not in text
     assert "Page 1 content" in text
+
+
+def test_extract_pdf_text_caches_within_run():
+    """The same PDF URL must trigger the expensive extraction only once per run."""
+    scraper = _make_scraper()
+    with patch.object(
+        scraper, "_extract_pdf_text_uncached", return_value="extracted"
+    ) as mock_extract:
+        first = scraper._extract_pdf_text("http://example.com/a.pdf", 10)
+        second = scraper._extract_pdf_text("http://example.com/a.pdf", 10)
+    assert first == second == "extracted"
+    mock_extract.assert_called_once()
+
+
+def test_close_clears_pdf_cache():
+    scraper = _make_scraper()
+    scraper._pdf_text_cache["http://example.com/a.pdf"] = "x"
+    with patch.object(scraper.session, "close"):
+        scraper.close()
+    assert scraper._pdf_text_cache == {}

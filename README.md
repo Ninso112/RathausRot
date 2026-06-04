@@ -79,6 +79,8 @@
 | `!verlauf` | Letzte Scrape-Läufe anzeigen |
 | `!nächste` | Nächsten geplanten Lauf anzeigen |
 | `!statistik` | Scrape-Statistiken anzeigen |
+| `!kosten` | Token-Verbrauch der letzten 30 Tage anzeigen |
+| `!cleanup` | Alte Datenbankeinträge entfernen (Retention) |
 | `!stat` | Systemauslastung (CPU, RAM, Disk, Uptime, CPU-Temperatur) |
 | `!log [level] [anzahl]` | Bot-Logs anzeigen (z.B. `!log error 20`) |
 | `!config` | Aktuelle Konfiguration anzeigen |
@@ -164,6 +166,9 @@ bash stop.sh
 
 # 5. Konfiguration ändern
 bash config.sh
+
+# 6. Auf neue Version aktualisieren (stoppt, git pull, Abhängigkeiten, Neustart)
+bash update.sh
 ```
 
 Das Skript `install.sh` erkennt automatisch deine Linux-Distribution, installiert alle Abhängigkeiten und startet den interaktiven Setup-Wizard.
@@ -171,10 +176,11 @@ Das Skript `install.sh` erkennt automatisch deine Linux-Distribution, installier
 ### CLI-Optionen
 
 ```bash
-python -m rathausrot --setup      # Setup-Wizard starten
-python -m rathausrot --run-now    # Pipeline sofort ausführen
-python -m rathausrot --test       # Testnachricht an Matrix senden
-python -m rathausrot --version    # Version anzeigen
+python -m rathausrot --setup         # Setup-Wizard starten
+python -m rathausrot --run-now       # Pipeline sofort ausführen
+python -m rathausrot --test          # Testnachricht an Matrix senden
+python -m rathausrot --check-config  # Konfiguration validieren und beenden
+python -m rathausrot --version       # Version anzeigen
 ```
 
 ---
@@ -211,6 +217,8 @@ bot:
   log_level: "INFO"
   log_file: "rathausrot.log"
   send_pdf_attachments: false            # PDFs als Dateinachricht senden
+  data_retention_days: 180               # DB-Aufbewahrung in Tagen (0 = nie löschen)
+  failure_alert_threshold: 3             # Warnung nach N Fehlläufen in Folge (0 = aus)
   allowed_users:                         # Wer Befehle nutzen darf
     - "@admin:matrix.org"
 

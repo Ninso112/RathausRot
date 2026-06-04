@@ -15,6 +15,43 @@ class TestMainVersion:
         assert "RathausRot" in captured.out
 
 
+class TestCheckConfig:
+    def test_check_config_valid(self, capsys):
+        with (
+            patch("sys.argv", ["rathausrot", "--check-config"]),
+            patch("rathausrot.config_manager.ConfigManager.get", return_value="INFO"),
+            patch("rathausrot.utils.setup_logging"),
+            patch("signal.signal"),
+            patch("rathausrot.config_manager.ConfigManager.load", return_value={}),
+            patch("rathausrot.config_manager.validate_config", return_value=[]),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                from rathausrot.main import main
+
+                main()
+            assert exc_info.value.code == 0
+        assert "gültig" in capsys.readouterr().out
+
+    def test_check_config_invalid(self, capsys):
+        with (
+            patch("sys.argv", ["rathausrot", "--check-config"]),
+            patch("rathausrot.config_manager.ConfigManager.get", return_value="INFO"),
+            patch("rathausrot.utils.setup_logging"),
+            patch("signal.signal"),
+            patch("rathausrot.config_manager.ConfigManager.load", return_value={}),
+            patch(
+                "rathausrot.config_manager.validate_config",
+                return_value=["matrix.homeserver fehlt."],
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                from rathausrot.main import main
+
+                main()
+            assert exc_info.value.code == 1
+        assert "homeserver" in capsys.readouterr().out
+
+
 class TestMainNotConfigured:
     def test_exits_when_not_configured(self, capsys):
         with (

@@ -34,6 +34,8 @@ def make_scheduler(config_overrides=None):
             "allowed_users": [],
             "relevance_threshold": 1,
             "healthcheck_port": 0,
+            "data_retention_days": 0,
+            "failure_alert_threshold": 0,
         },
     }
     if config_overrides:
@@ -145,7 +147,7 @@ class TestRunPipeline:
         ):
             scheduler.run_pipeline()
 
-        scheduler._history.record_run.assert_called_once_with(0, True)
+        scheduler._history.record_run.assert_called_once_with(0, True, tokens=0)
 
     def test_items_processed_and_sent(self, tmp_path):
         scheduler = make_scheduler()
@@ -183,7 +185,7 @@ class TestRunPipeline:
         ):
             scheduler.run_pipeline()
 
-        scheduler._history.record_run.assert_called_once_with(1, True)
+        scheduler._history.record_run.assert_called_once_with(1, True, tokens=0)
         scheduler._bot.send_chunks.assert_called_once()
 
     def test_relevance_threshold_filters_items(self, tmp_path):
@@ -222,7 +224,7 @@ class TestRunPipeline:
         ):
             scheduler.run_pipeline()
 
-        scheduler._history.record_run.assert_called_once_with(0, True)
+        scheduler._history.record_run.assert_called_once_with(0, True, tokens=0)
 
     def test_llm_failure_adds_to_retry_queue(self, tmp_path):
         scheduler = make_scheduler()
@@ -301,7 +303,7 @@ class TestRunPipeline:
             scheduler.run_pipeline()
 
         mock_llm.analyze_item.assert_not_called()
-        scheduler._history.record_run.assert_called_once_with(1, True)
+        scheduler._history.record_run.assert_called_once_with(1, True, tokens=0)
 
     def test_pipeline_error_sends_error_message(self, tmp_path):
         scheduler = make_scheduler()
@@ -319,7 +321,9 @@ class TestRunPipeline:
         ):
             scheduler.run_pipeline()
 
-        scheduler._history.record_run.assert_called_once_with(0, False, "boom")
+        scheduler._history.record_run.assert_called_once_with(
+            0, False, "boom", tokens=0
+        )
         scheduler._bot.send_message.assert_called_once()
         assert "Pipeline-Fehler" in scheduler._bot.send_message.call_args[0][0]
 
@@ -395,7 +399,7 @@ class TestRunPipeline:
             scheduler.run_pipeline()
 
         scheduler._retry_queue.remove.assert_called_once_with("r1")
-        scheduler._history.record_run.assert_called_once_with(1, True)
+        scheduler._history.record_run.assert_called_once_with(1, True, tokens=0)
 
     def test_retry_queue_failure_continues(self, tmp_path):
         scheduler = make_scheduler()
@@ -471,3 +475,112 @@ class TestStopEvent:
         assert not scheduler._stop_event.is_set()
         scheduler.stop()
         assert scheduler._stop_event.is_set()
+
+
+# ------------------------------------------------------------------ #
+# Retention cleanup
+# ------------------------------------------------------------------ #
+
+
+def _run_empty_pipeline(scheduler, tmp_path):
+    mock_scraper = MagicMock()
+    mock_scraper.fetch_new_items.return_value = iter([])
+    mock_scraper.fetch_sessions.return_value = []
+    mock_scraper.count_upcoming_items.return_value = 0
+    mock_scraper.tracker = MagicMock()
+    scheduler._retry_queue.get_pending.return_value = []
+    scheduler._item_store = MagicMock()
+    scheduler._item_store.get_new_sessions.return_value = []
+    fake_file = tmp_path / "last_run.txt"
+    with (
+        patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper),
+        patch("rathausrot.scheduler.OpenRouterClient"),
+        patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+    ):
+        scheduler.run_pipeline()
+
+
+class TestCleanup:
+    def test_cleanup_called_after_success(self, tmp_path):
+        scheduler = make_scheduler({"bot": {"data_retention_days": 90}})
+        scheduler._bot = MagicMock()
+        with patch("rathausrot.scheduler.cleanup_old_entries") as mock_cleanup:
+            _run_empty_pipeline(scheduler, tmp_path)
+        mock_cleanup.assert_called_once_with(days=90, vacuum=False)
+
+    def test_cleanup_disabled(self, tmp_path):
+        scheduler = make_scheduler({"bot": {"data_retention_days": 0}})
+        scheduler._bot = MagicMock()
+        with patch("rathausrot.scheduler.cleanup_old_entries") as mock_cleanup:
+            _run_empty_pipeline(scheduler, tmp_path)
+        mock_cleanup.assert_not_called()
+
+    def test_cleanup_failure_does_not_break_pipeline(self, tmp_path):
+        scheduler = make_scheduler({"bot": {"data_retention_days": 90}})
+        scheduler._bot = MagicMock()
+        with patch(
+            "rathausrot.scheduler.cleanup_old_entries",
+            side_effect=RuntimeError("disk full"),
+        ):
+            _run_empty_pipeline(scheduler, tmp_path)  # must not raise
+        scheduler._history.record_run.assert_called_once_with(0, True, tokens=0)
+
+
+# ------------------------------------------------------------------ #
+# Failure escalation
+# ------------------------------------------------------------------ #
+
+
+class TestFailureAlert:
+    def test_alert_sent_when_threshold_reached(self, tmp_path):
+        scheduler = make_scheduler({"bot": {"failure_alert_threshold": 3}})
+        scheduler._bot = MagicMock()
+        scheduler._history.get_consecutive_failures.return_value = 3
+        scheduler._retry_queue.get_pending.return_value = []
+        fake_file = tmp_path / "last_run.txt"
+        with (
+            patch(
+                "rathausrot.scheduler.RatsinfoScraper",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("rathausrot.scheduler.OpenRouterClient"),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
+            scheduler.run_pipeline()
+        sent = [c.args[0] for c in scheduler._bot.send_message.call_args_list]
+        assert any("in Folge fehlgeschlagen" in msg for msg in sent)
+
+    def test_no_alert_below_threshold(self, tmp_path):
+        scheduler = make_scheduler({"bot": {"failure_alert_threshold": 3}})
+        scheduler._bot = MagicMock()
+        scheduler._history.get_consecutive_failures.return_value = 1
+        scheduler._retry_queue.get_pending.return_value = []
+        fake_file = tmp_path / "last_run.txt"
+        with (
+            patch(
+                "rathausrot.scheduler.RatsinfoScraper",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("rathausrot.scheduler.OpenRouterClient"),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
+            scheduler.run_pipeline()
+        sent = [c.args[0] for c in scheduler._bot.send_message.call_args_list]
+        assert not any("in Folge fehlgeschlagen" in msg for msg in sent)
+
+    def test_alert_disabled(self, tmp_path):
+        scheduler = make_scheduler({"bot": {"failure_alert_threshold": 0}})
+        scheduler._bot = MagicMock()
+        scheduler._history.get_consecutive_failures.return_value = 5
+        scheduler._retry_queue.get_pending.return_value = []
+        fake_file = tmp_path / "last_run.txt"
+        with (
+            patch(
+                "rathausrot.scheduler.RatsinfoScraper",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("rathausrot.scheduler.OpenRouterClient"),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
+            scheduler.run_pipeline()
+        scheduler._history.get_consecutive_failures.assert_not_called()

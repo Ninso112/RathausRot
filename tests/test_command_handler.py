@@ -473,3 +473,60 @@ class TestFormatDuration:
 
     def test_exact_day(self):
         assert _format_duration(86400) == "1d"
+
+
+# ------------------------------------------------------------------ #
+# !kosten
+# ------------------------------------------------------------------ #
+
+
+class TestKosten:
+    def test_kosten_shows_token_stats(self):
+        handler = make_handler()
+        handler.scheduler_ref.history.get_token_stats.return_value = {
+            "tokens": 12345,
+            "items": 10,
+            "runs": 4,
+            "days": 30,
+        }
+        result = handler.handle("@user:example.com", "!kosten")
+        handler.scheduler_ref.history.get_token_stats.assert_called_once_with(30)
+        assert "12,345" in result
+        assert "30 Tage" in result
+
+    def test_kosten_handles_zero_items(self):
+        handler = make_handler()
+        handler.scheduler_ref.history.get_token_stats.return_value = {
+            "tokens": 0,
+            "items": 0,
+            "runs": 0,
+            "days": 30,
+        }
+        result = handler.handle("@user:example.com", "!kosten")
+        assert "0" in result  # no ZeroDivisionError
+
+
+# ------------------------------------------------------------------ #
+# !cleanup
+# ------------------------------------------------------------------ #
+
+
+class TestCleanup:
+    def test_cleanup_runs_and_reports(self):
+        handler = make_handler(
+            bot={"data_retention_days": 90, "allowed_users": [], "party": "SPD"}
+        )
+        with patch("rathausrot.database.cleanup_old_entries") as mock_cleanup:
+            mock_cleanup.return_value = {"llm_cache": 3, "council_items": 2}
+            result = handler.handle("@user:example.com", "!cleanup")
+        mock_cleanup.assert_called_once_with(days=90, vacuum=True)
+        assert "5 Einträge" in result
+
+    def test_cleanup_disabled(self):
+        handler = make_handler(
+            bot={"data_retention_days": 0, "allowed_users": [], "party": "SPD"}
+        )
+        with patch("rathausrot.database.cleanup_old_entries") as mock_cleanup:
+            result = handler.handle("@user:example.com", "!cleanup")
+        mock_cleanup.assert_not_called()
+        assert "deaktiviert" in result

@@ -164,3 +164,86 @@ class TestGet:
     def test_get_missing_returns_default(self):
         cm = ConfigManager(config_path="/tmp/nonexistent_rathausrot_test4.yaml")
         assert cm.get("nonexistent", "key", default="fallback") == "fallback"
+
+
+class TestValidateConfig:
+    def _valid_config(self):
+        return {
+            "matrix": {
+                "homeserver": "https://matrix.org",
+                "username": "@bot:matrix.org",
+                "access_token": "tok",
+                "room_id": "!r:matrix.org",
+                "room_ids": [],
+            },
+            "openrouter": {"api_key": "sk-or-x", "max_tokens": 1024},
+            "scraper": {"ratsinfo_url": "https://ratsinfo.example.de/bi/"},
+            "bot": {
+                "relevance_threshold": 1,
+                "interval_minutes": 360,
+                "healthcheck_port": 0,
+            },
+            "cities": [],
+        }
+
+    def test_valid_config_has_no_errors(self):
+        from rathausrot.config_manager import validate_config
+
+        assert validate_config(self._valid_config()) == []
+
+    def test_missing_homeserver(self):
+        from rathausrot.config_manager import validate_config
+
+        cfg = self._valid_config()
+        cfg["matrix"]["homeserver"] = ""
+        errors = validate_config(cfg)
+        assert any("homeserver" in e for e in errors)
+
+    def test_invalid_homeserver_url(self):
+        from rathausrot.config_manager import validate_config
+
+        cfg = self._valid_config()
+        cfg["matrix"]["homeserver"] = "matrix.org"  # missing scheme
+        errors = validate_config(cfg)
+        assert any("homeserver" in e for e in errors)
+
+    def test_invalid_username_format(self):
+        from rathausrot.config_manager import validate_config
+
+        cfg = self._valid_config()
+        cfg["matrix"]["username"] = "bot"
+        errors = validate_config(cfg)
+        assert any("username" in e for e in errors)
+
+    def test_missing_room(self):
+        from rathausrot.config_manager import validate_config
+
+        cfg = self._valid_config()
+        cfg["matrix"]["room_id"] = ""
+        cfg["matrix"]["room_ids"] = []
+        errors = validate_config(cfg)
+        assert any("Raum" in e for e in errors)
+
+    def test_relevance_threshold_out_of_range(self):
+        from rathausrot.config_manager import validate_config
+
+        cfg = self._valid_config()
+        cfg["bot"]["relevance_threshold"] = 9
+        errors = validate_config(cfg)
+        assert any("relevance_threshold" in e for e in errors)
+
+    def test_city_url_used_when_no_global(self):
+        from rathausrot.config_manager import validate_config
+
+        cfg = self._valid_config()
+        cfg["scraper"]["ratsinfo_url"] = ""
+        cfg["cities"] = [{"name": "X", "ratsinfo_url": "https://x.de/bi/"}]
+        assert validate_config(cfg) == []
+
+    def test_invalid_city_url(self):
+        from rathausrot.config_manager import validate_config
+
+        cfg = self._valid_config()
+        cfg["cities"] = [{"name": "X", "ratsinfo_url": "ftp://x.de"}]
+        errors = validate_config(cfg)
+        assert any("X" in e for e in errors)

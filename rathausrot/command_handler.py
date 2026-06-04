@@ -19,10 +19,12 @@ HELP_TEXT = (
     "<li><code>!verlauf</code> – Letzte Scrape-Läufe anzeigen</li>"
     "<li><code>!nächste</code> – Nächsten geplanten Lauf anzeigen</li>"
     "<li><code>!statistik</code> – Scrape-Statistiken anzeigen</li>"
+    "<li><code>!kosten</code> – Token-Verbrauch der letzten 30 Tage</li>"
     "<li><code>!guthaben</code> – OpenRouter-Guthaben abfragen</li>"
     "<li><code>!stat</code> – Systemauslastung (CPU, RAM, Disk, Uptime)</li>"
     "<li><code>!log [level] [anzahl]</code> – Bot-Logs anzeigen</li>"
     "<li><code>!config</code> – Aktuelle Konfiguration anzeigen</li>"
+    "<li><code>!cleanup</code> – Alte Datenbankeinträge entfernen</li>"
     "<li><code>!version</code> – Version anzeigen</li>"
     "<li><code>!stop</code> – Bot herunterfahren</li>"
     "<li><code>!hilfe</code> – Diese Hilfe anzeigen</li>"
@@ -60,6 +62,8 @@ class CommandHandler:
             "!nachste": self._cmd_naechste,
             "!stat": self._cmd_stat,
             "!statistik": self._cmd_statistik,
+            "!kosten": self._cmd_kosten,
+            "!cleanup": self._cmd_cleanup,
             "!log": self._cmd_log,
             "!version": self._cmd_version,
             "!config": self._cmd_config,
@@ -373,6 +377,45 @@ class CommandHandler:
             f"<li><strong>Erfolgsrate:</strong> {success_rate:.0f}%</li>"
             f"<li><strong>Items gesamt:</strong> {total_items}</li>"
             "</ul>"
+        )
+
+    def _cmd_kosten(self, sender: str, body: str) -> str:
+        stats = self.scheduler_ref.history.get_token_stats(30)
+        tokens = stats.get("tokens", 0)
+        items = stats.get("items", 0)
+        runs = stats.get("runs", 0)
+        avg_per_item = tokens / items if items else 0
+        return (
+            "<p><strong>💸 Token-Verbrauch (letzte 30 Tage)</strong></p>"
+            "<ul>"
+            f"<li><strong>Tokens gesamt:</strong> {tokens:,}</li>"
+            f"<li><strong>Erfolgreiche Läufe:</strong> {runs}</li>"
+            f"<li><strong>Analysierte Items:</strong> {items}</li>"
+            f"<li><strong>Ø Tokens/Item:</strong> {avg_per_item:,.0f}</li>"
+            "</ul>"
+            "<p><em>Tatsächliche Kosten in $ über <code>!guthaben</code> abrufen.</em></p>"
+        )
+
+    def _cmd_cleanup(self, sender: str, body: str) -> str:
+        from rathausrot.database import cleanup_old_entries
+
+        days = self.config.get("bot", {}).get("data_retention_days", 180)
+        if not days or days <= 0:
+            return (
+                "<p>ℹ️ Datenbereinigung ist deaktiviert "
+                "(<code>data_retention_days</code> ≤ 0).</p>"
+            )
+        deleted = cleanup_old_entries(days=days, vacuum=True)
+        total = sum(deleted.values())
+        details = "".join(
+            f"<li>{html.escape(table)}: {count}</li>"
+            for table, count in deleted.items()
+        )
+        return (
+            f"<p><strong>🧹 Datenbereinigung abgeschlossen</strong> "
+            f"(älter als {days} Tage)</p>"
+            f"<p>{total} Einträge entfernt:</p>"
+            f"<ul>{details}</ul>"
         )
 
     def _cmd_log(self, sender: str, body: str) -> str:

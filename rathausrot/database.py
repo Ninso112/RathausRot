@@ -101,23 +101,39 @@ class RunHistoryTracker:
                 "ran_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, "
                 "item_count INTEGER DEFAULT 0, "
                 "success INTEGER DEFAULT 1, "
-                "error_msg TEXT DEFAULT '')"
+                "error_msg TEXT DEFAULT '', "
+                "tokens_used INTEGER DEFAULT 0)"
             )
+            # Migration: add tokens_used to databases created before this column existed
+            existing_cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(run_history)")
+            }
+            if "tokens_used" not in existing_cols:
+                conn.execute(
+                    "ALTER TABLE run_history ADD COLUMN tokens_used INTEGER DEFAULT 0"
+                )
             conn.commit()
 
-    def record_run(self, item_count: int, success: bool, error_msg: str = "") -> None:
+    def record_run(
+        self,
+        item_count: int,
+        success: bool,
+        error_msg: str = "",
+        tokens: int = 0,
+    ) -> None:
         with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
-                "INSERT INTO run_history (item_count, success, error_msg) VALUES (?, ?, ?)",
-                (item_count, 1 if success else 0, error_msg),
+                "INSERT INTO run_history (item_count, success, error_msg, tokens_used) "
+                "VALUES (?, ?, ?, ?)",
+                (item_count, 1 if success else 0, error_msg, int(tokens)),
             )
             conn.commit()
 
     def get_recent(self, limit: int = 10) -> list[dict]:
         with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT ran_at, item_count, success, error_msg FROM run_history "
-                "ORDER BY ran_at DESC LIMIT ?",
+                "SELECT ran_at, item_count, success, error_msg, tokens_used "
+                "FROM run_history ORDER BY ran_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [
@@ -126,9 +142,39 @@ class RunHistoryTracker:
                 "item_count": row[1],
                 "success": bool(row[2]),
                 "error_msg": row[3],
+                "tokens_used": row[4],
             }
             for row in rows
         ]
+
+    def get_token_stats(self, days: int = 30) -> dict:
+        """Aggregate token usage and item counts over the last `days` days."""
+        with DatabaseManager.get_connection(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(tokens_used), 0), COALESCE(SUM(item_count), 0), "
+                "COUNT(*) FROM run_history "
+                "WHERE ran_at >= datetime('now', ?) AND success = 1",
+                (f"-{int(days)} days",),
+            ).fetchone()
+        return {
+            "tokens": row[0],
+            "items": row[1],
+            "runs": row[2],
+            "days": days,
+        }
+
+    def get_consecutive_failures(self) -> int:
+        """Return how many of the most recent runs failed in an unbroken streak."""
+        with DatabaseManager.get_connection(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT success FROM run_history ORDER BY ran_at DESC, id DESC LIMIT 100"
+            ).fetchall()
+        count = 0
+        for (success,) in rows:
+            if success:
+                break
+            count += 1
+        return count
 
 
 class RetryQueue:
@@ -344,3 +390,45 @@ class LLMCache:
                 (item_id, json.dumps(asdict(result))),
             )
             conn.commit()
+
+
+# Tables eligible for time-based retention cleanup: (table, timestamp_column)
+_RETENTION_TABLES = (
+    ("llm_cache", "cached_at"),
+    ("council_items", "stored_at"),
+    ("run_history", "ran_at"),
+    ("processed_items", "processed_at"),
+)
+
+
+def cleanup_old_entries(
+    days: int = 180, vacuum: bool = False, db_path: str = DEFAULT_DB_PATH
+) -> dict[str, int]:
+    """Delete rows older than `days` from retention-managed tables.
+
+    Returns a mapping of table name to the number of deleted rows. A
+    non-positive `days` value disables cleanup and returns an empty dict.
+    Missing tables are skipped gracefully. When `vacuum` is True the database
+    file is compacted afterwards (slower, reclaims disk space).
+    """
+    if days <= 0:
+        return {}
+    cutoff = f"-{int(days)} days"
+    conn = DatabaseManager.get_connection(db_path)
+    deleted: dict[str, int] = {}
+    for table, column in _RETENTION_TABLES:
+        try:
+            cursor = conn.execute(
+                f"DELETE FROM {table} WHERE {column} < datetime('now', ?)",  # noqa: S608 – table/column are fixed literals
+                (cutoff,),
+            )
+            deleted[table] = cursor.rowcount
+        except sqlite3.OperationalError:
+            # Table does not exist yet – nothing to clean up.
+            deleted[table] = 0
+    conn.commit()
+    if vacuum:
+        conn.execute("VACUUM")
+    total = sum(deleted.values())
+    logger.info("DB cleanup removed %d rows older than %d days", total, days)
+    return deleted

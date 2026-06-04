@@ -47,6 +47,12 @@ bot:
   allowed_users: []
   # PDF-Anhänge als Matrix-Dateinachrichten senden (true/false)
   send_pdf_attachments: false
+  # Aufbewahrungsdauer für Datenbankeinträge in Tagen (0 = nie löschen).
+  # Ältere Cache-, Archiv- und Verlaufseinträge werden automatisch entfernt.
+  data_retention_days: 180
+  # Nach wie vielen fehlgeschlagenen Läufen in Folge eine Warnung in den
+  # Matrix-Raum gesendet wird (0 = deaktiviert).
+  failure_alert_threshold: 3
 
 # Multi-Stadt: Mehrere Kommunen überwachen (optional).
 # Wenn dieser Block vorhanden und nicht leer ist, werden die Städte einzeln
