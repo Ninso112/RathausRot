@@ -678,3 +678,53 @@ def test_close_clears_pdf_cache():
     with patch.object(scraper.session, "close"):
         scraper.close()
     assert scraper._pdf_text_cache == {}
+
+
+# ------------------------------------------------------------------ #
+# _extract_sternberg_committee
+# ------------------------------------------------------------------ #
+
+
+def _termin_cell(html_str):
+    """Build a tops-link element inside a column-termin <td> from HTML."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html_str, "html.parser")
+    return soup.find("a", href=lambda h: h and "/tops/?__=" in h)
+
+
+def test_extract_sternberg_committee_basic():
+    tops_link = _termin_cell(
+        '<td class="column-termin">'
+        '<a href="/tops/?__=ABC">Mi, 16.09.2026 17:00 Uhr</a>'
+        " Ausschuss für Schule und Bildung</td>"
+    )
+    committee = RatsinfoScraper._extract_sternberg_committee(
+        tops_link, "Mi, 16.09.2026 17:00 Uhr"
+    )
+    assert committee == "Ausschuss für Schule und Bildung"
+
+
+def test_extract_sternberg_committee_repairs_linebreak_hyphen():
+    # HTML line break turns "Siegen-Ost" into "Siegen- Ost"; the genuine
+    # " - " separator must stay intact.
+    tops_link = _termin_cell(
+        '<td class="column-termin">'
+        '<a href="/tops/?__=ABC">Mi, 16.09.2026 17:00 Uhr</a>'
+        " Bezirksausschuss III - Siegen-<br/>Ost</td>"
+    )
+    committee = RatsinfoScraper._extract_sternberg_committee(
+        tops_link, "Mi, 16.09.2026 17:00 Uhr"
+    )
+    assert committee == "Bezirksausschuss III - Siegen-Ost"
+
+
+def test_extract_sternberg_committee_empty_when_only_date():
+    tops_link = _termin_cell(
+        '<td class="column-termin">'
+        '<a href="/tops/?__=ABC">Do, 16.07.2026 16:00 Uhr</a></td>'
+    )
+    committee = RatsinfoScraper._extract_sternberg_committee(
+        tops_link, "Do, 16.07.2026 16:00 Uhr"
+    )
+    assert committee == ""

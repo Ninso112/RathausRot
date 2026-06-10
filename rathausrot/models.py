@@ -13,6 +13,7 @@ class CouncilItem:
     pdf_urls: list[str] = field(default_factory=list)
     source_system: str = "unknown"
     city_name: str = ""
+    committee: str = ""
 
 
 @dataclass

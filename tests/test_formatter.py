@@ -34,6 +34,34 @@ def test_format_item_contains_title():
     assert "Wichtiger Tagesordnungspunkt" in html
 
 
+def test_format_item_contains_committee():
+    formatter = MatrixFormatter()
+    item = make_item()
+    item.committee = "Ausschuss für Schule und Bildung"
+    result = make_result()
+    html = formatter.format_item(item, result)
+    assert "Ausschuss für Schule und Bildung" in html
+    assert "Ausschuss:" in html
+
+
+def test_format_item_omits_committee_when_empty():
+    formatter = MatrixFormatter()
+    item = make_item()  # committee defaults to ""
+    result = make_result()
+    html = formatter.format_item(item, result)
+    assert "🏛️" not in html
+
+
+def test_format_item_xss_in_committee():
+    formatter = MatrixFormatter()
+    item = make_item()
+    item.committee = "<script>alert(1)</script>"
+    result = make_result()
+    html = formatter.format_item(item, result)
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
 def test_format_item_verdict_emoji():
     formatter = MatrixFormatter()
     item = make_item()

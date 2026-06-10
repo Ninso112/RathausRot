@@ -287,13 +287,17 @@ class RatsinfoScraper:
                 title = a_tag.get_text(strip=True)
                 if not title:
                     continue
-                # Try to find date from nearby tops link
+                # Try to find date and committee from nearby tops link
                 parent = a_tag.find_parent(["tr", "li", "div"])
                 date_str = ""
+                committee = ""
                 if parent:
                     tops_link = parent.find("a", href=lambda h: h and "/tops/?__=" in h)
                     if tops_link:
                         date_str = tops_link.get_text(strip=True)
+                        committee = self._extract_sternberg_committee(
+                            tops_link, date_str
+                        )
                 item_id = self._build_item_id(url, title)
                 if not force and not self.tracker.is_new(item_id):
                     logger.debug("Skipping known Sternberg item: %s", title)
@@ -307,14 +311,43 @@ class RatsinfoScraper:
                     )
                     continue
                 rate_limit_sleep()
-                item = self._parse_sternberg_item(item_id, title, url, date_str)
+                item = self._parse_sternberg_item(
+                    item_id, title, url, date_str, committee
+                )
                 if item:
                     yield item
             except Exception as exc:
                 logger.warning("Error in Sternberg fetch: %s", exc)
 
+    @staticmethod
+    def _extract_sternberg_committee(tops_link, date_str: str) -> str:
+        """Extract the committee (Gremium) name from a Sternberg termin cell.
+
+        In the /vorlagen table the `column-termin` cell contains both the
+        session date (inside the /tops/ link) and the committee name as plain
+        text, e.g. "Mi, 16.09.2026 17:00 Uhr  Bezirksausschuss III - Siegen-Ost".
+        The committee is the cell text with the date portion removed.
+        """
+        cell = tops_link.find_parent("td") or tops_link.parent
+        if cell is None:
+            return ""
+        text = cell.get_text(" ", strip=True)
+        if date_str:
+            text = text.replace(date_str, " ")
+        # Collapse whitespace, then repair hyphens split by HTML line breaks
+        # ("Siegen- Ost" -> "Siegen-Ost") without touching the genuine " - "
+        # separator (which has spaces on both sides).
+        committee = re.sub(r"\s+", " ", text).strip()
+        committee = re.sub(r"(\S)-\s+", r"\1-", committee)
+        return committee
+
     def _parse_sternberg_item(
-        self, item_id: str, title: str, url: str, date_str: str
+        self,
+        item_id: str,
+        title: str,
+        url: str,
+        date_str: str,
+        committee: str = "",
     ) -> CouncilItem | None:
         detail_soup = self._fetch_page(url)
         body_text = ""
@@ -348,6 +381,7 @@ class RatsinfoScraper:
             pdf_urls=pdf_urls,
             source_system="sternberg",
             city_name=self.city_name,
+            committee=committee,
         )
 
     def _fetch_generic(self, force: bool = False) -> Iterator[CouncilItem]:

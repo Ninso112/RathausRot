@@ -68,6 +68,10 @@ class MatrixFormatter:
         safe_title = html.escape(item.title)
         title_link = f'<a href="{safe_url}">{safe_title}</a>'
         parts = [f"<h3>{title_link}</h3>"]
+        if item.committee:
+            parts.append(
+                f"<p>🏛️ <strong>Ausschuss:</strong> {html.escape(item.committee)}</p>"
+            )
         if item.date:
             parts.append(f"<p><em>Datum: {html.escape(item.date)}</em></p>")
         if result:
