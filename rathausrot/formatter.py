@@ -74,7 +74,15 @@ class MatrixFormatter:
             )
         if item.date:
             parts.append(f"<p><em>Datum: {html.escape(item.date)}</em></p>")
-        if result:
+        if result and not result.parse_ok:
+            # Defensive second line of defence: a degraded analysis should
+            # normally be filtered out upstream (scheduler), but never present
+            # it as a real assessment if one slips through.
+            parts.append(
+                "<p>⚠️ <strong>Automatische Analyse unvollständig</strong> – "
+                "bitte die Originalvorlage prüfen.</p>"
+            )
+        elif result:
             parts.append(f"<p>{html.escape(result.summary)}</p>")
             key_points = result.key_points or []
             if key_points:
@@ -97,6 +105,9 @@ class MatrixFormatter:
                 f"<em>{html.escape(result.verdict_reason)}</em></p>"
             )
             parts.append(f"<p><strong>Relevanz:</strong> {stars}</p>")
+            parts.append(
+                f"<p><strong>Sicherheit:</strong> {html.escape(result.confidence)}</p>"
+            )
         else:
             parts.append("<p><em>Keine KI-Analyse verfügbar.</em></p>")
         return "\n".join(parts)

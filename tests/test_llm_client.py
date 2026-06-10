@@ -53,6 +53,32 @@ class TestDictToResult:
         assert result.summary == ""
         assert result.verdict == "Enthaltung"
         assert result.relevance_score == 3
+        assert result.confidence == "mittel"
+        assert result.parse_ok is True
+
+    def test_verdict_normalized_case_and_whitespace(self):
+        client = make_client()
+        for raw, expected in [
+            ("zustimmung", "Zustimmung"),
+            ("  Zustimmung  ", "Zustimmung"),
+            ("<b>Ablehnung</b>", "Ablehnung"),
+            ("ENTHALTUNG", "Enthaltung"),
+        ]:
+            result = client._dict_to_result({"summary": "t", "verdict": raw})
+            assert result.verdict == expected
+
+    def test_verdict_unknown_falls_back_to_enthaltung(self):
+        client = make_client()
+        for raw in ["Ja", "Tendenz zur Zustimmung", "Vielleicht", "", 42, None]:
+            result = client._dict_to_result({"summary": "t", "verdict": raw})
+            assert result.verdict == "Enthaltung"
+
+    def test_confidence_validated(self):
+        client = make_client()
+        assert client._dict_to_result({"confidence": "HOCH"}).confidence == "hoch"
+        assert client._dict_to_result({"confidence": " niedrig "}).confidence == "niedrig"
+        assert client._dict_to_result({"confidence": "sehr sicher"}).confidence == "mittel"
+        assert client._dict_to_result({"confidence": 3}).confidence == "mittel"
 
 
 class TestParseResponse:
@@ -75,10 +101,17 @@ class TestParseResponse:
         result = client._parse_response(text)
         assert result.summary == "Balanced"
 
-    def test_unparseable_returns_default(self):
+    def test_unparseable_marks_parse_failure(self):
         client = make_client()
         result = client._parse_response("This is not JSON at all")
         assert result.summary.startswith("This is not JSON")
+        assert result.parse_ok is False
+        assert result.confidence == "niedrig"
+
+    def test_successful_parse_sets_parse_ok(self):
+        client = make_client()
+        result = client._parse_response('{"summary": "ok", "verdict": "Zustimmung"}')
+        assert result.parse_ok is True
 
     def test_greedy_regex_avoided(self):
         client = make_client()

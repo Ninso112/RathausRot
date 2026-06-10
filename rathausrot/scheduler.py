@@ -203,11 +203,14 @@ class BotScheduler:
                                 self._llm_cache.put(item.id, result)
                         else:
                             result = llm_client.analyze_item(item)
-                            if result is not None:
+                            # Only cache fully-parsed results; a degraded result
+                            # (parse_ok=False) should be re-analyzed next run.
+                            if result is not None and result.parse_ok:
                                 self._llm_cache.put(item.id, result)
-                        if result is None:
+                        analysis_failed = result is None or not result.parse_ok
+                        if analysis_failed:
                             logger.warning(
-                                "LLM analysis failed, adding to retry queue: %s",
+                                "LLM analysis failed or unparseable, adding to retry queue: %s",
                                 item.id,
                             )
                             self._retry_queue.add(item)

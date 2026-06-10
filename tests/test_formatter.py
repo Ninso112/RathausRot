@@ -62,6 +62,38 @@ def test_format_item_xss_in_committee():
     assert "&lt;script&gt;" in html
 
 
+def test_format_item_shows_confidence():
+    formatter = MatrixFormatter()
+    item = make_item()
+    result = make_result()
+    result.confidence = "niedrig"
+    html = formatter.format_item(item, result)
+    assert "Sicherheit:" in html
+    assert "niedrig" in html
+
+
+def test_format_item_degraded_shows_warning_not_assessment():
+    formatter = MatrixFormatter()
+    item = make_item()
+    result = make_result(verdict="Zustimmung")
+    result.parse_ok = False
+    html = formatter.format_item(item, result)
+    assert "unvollständig" in html
+    # The normal assessment line must not be rendered for a degraded result
+    assert "Einschätzung:" not in html
+    assert "Relevanz:" not in html
+
+
+def test_format_item_xss_in_confidence():
+    formatter = MatrixFormatter()
+    item = make_item()
+    result = make_result()
+    result.confidence = "<script>alert(1)</script>"
+    html = formatter.format_item(item, result)
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
 def test_format_item_verdict_emoji():
     formatter = MatrixFormatter()
     item = make_item()

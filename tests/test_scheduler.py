@@ -262,6 +262,48 @@ class TestRunPipeline:
 
         scheduler._retry_queue.add.assert_called_once_with(item)
 
+    def test_degraded_result_retried_not_sent_or_cached(self, tmp_path):
+        scheduler = make_scheduler()
+        scheduler._bot = MagicMock()
+
+        from rathausrot.scraper import CouncilItem
+        from rathausrot.llm_client import LLMResult
+
+        item = CouncilItem(
+            id="t1",
+            title="Test",
+            url="http://x",
+            item_type="item",
+            date="",
+            body_text="body",
+            source_system="test",
+        )
+
+        mock_scraper = MagicMock()
+        mock_scraper.fetch_new_items.return_value = iter([item])
+        mock_scraper.tracker = MagicMock()
+
+        mock_llm = MagicMock()
+        # Unparseable response -> degraded result that must not be trusted
+        mock_llm.analyze_item.return_value = LLMResult(
+            summary="raw text", parse_ok=False
+        )
+
+        scheduler._llm_cache.get.return_value = None
+        scheduler._retry_queue.get_pending.return_value = []
+
+        fake_file = tmp_path / "last_run.txt"
+        with (
+            patch("rathausrot.scheduler.RatsinfoScraper", return_value=mock_scraper),
+            patch("rathausrot.scheduler.OpenRouterClient", return_value=mock_llm),
+            patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file),
+        ):
+            scheduler.run_pipeline()
+
+        scheduler._retry_queue.add.assert_called_once_with(item)
+        scheduler._llm_cache.put.assert_not_called()
+        scheduler._bot.send_chunks.assert_not_called()
+
     def test_cache_hit(self, tmp_path):
         scheduler = make_scheduler()
         scheduler._bot = MagicMock()

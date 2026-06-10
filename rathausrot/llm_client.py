@@ -21,6 +21,9 @@ SYSTEM_PROMPT_DISCLAIMER = (
     "keine offiziellen Positionen der Partei dar."
 )
 
+ALLOWED_VERDICTS = ("Zustimmung", "Ablehnung", "Enthaltung")
+ALLOWED_CONFIDENCE = ("hoch", "mittel", "niedrig")
+
 JSON_SCHEMA_EXAMPLE = """{
   "summary": "Kurze Zusammenfassung des Tagesordnungspunkts",
   "key_points": [
@@ -29,6 +32,7 @@ JSON_SCHEMA_EXAMPLE = """{
   ],
   "verdict": "Zustimmung|Ablehnung|Enthaltung",
   "verdict_reason": "Begründung der Einschätzung",
+  "confidence": "hoch|mittel|niedrig",
   "relevance_score": 3
 }"""
 
@@ -41,6 +45,36 @@ class LLMResult:
     verdict_reason: str = ""
     relevance_score: int = 3
     tokens_used: int = 0
+    confidence: str = "mittel"
+    parse_ok: bool = True
+
+
+def _normalize_verdict(raw) -> str:
+    """Map an arbitrary model verdict to exactly one allowed value.
+
+    Strips HTML tags and surrounding whitespace, then matches case-insensitively
+    against the three allowed verdicts. Anything that does not match exactly
+    falls back to 'Enthaltung' (conservative: no synonym guessing).
+    """
+    if not isinstance(raw, str):
+        return "Enthaltung"
+    cleaned = re.sub(r"<[^>]+>", "", raw).strip()
+    for verdict in ALLOWED_VERDICTS:
+        if cleaned.casefold() == verdict.casefold():
+            return verdict
+    if cleaned:
+        logger.warning("Unrecognized verdict from LLM, defaulting to Enthaltung: %r", raw)
+    return "Enthaltung"
+
+
+def _normalize_confidence(raw) -> str:
+    """Map an arbitrary model confidence to one of hoch/mittel/niedrig."""
+    if isinstance(raw, str):
+        cleaned = raw.strip().casefold()
+        for level in ALLOWED_CONFIDENCE:
+            if cleaned == level:
+                return level
+    return "mittel"
 
 
 class OpenRouterClient:
@@ -93,6 +127,11 @@ class OpenRouterClient:
                 f"Für jeden Eintrag in key_points liefere ein Objekt mit 'text' (der Kernaussage) "
                 f"und 'reason' (eine Begründung, warum {self.party} aus ihrer politischen Perspektive "
                 f"so auf diesen Punkt reagieren würde).\n\n"
+                f"Das Feld 'verdict' muss exakt einer dieser drei Werte sein: "
+                f"'Zustimmung', 'Ablehnung' oder 'Enthaltung'. Keine anderen Formulierungen.\n"
+                f"Das Feld 'confidence' gibt deine Sicherheit an ('hoch', 'mittel' oder 'niedrig'). "
+                f"Wenn die vorliegenden Informationen für eine fundierte Einschätzung nicht ausreichen, "
+                f"wähle 'Enthaltung' und setze confidence auf 'niedrig'. Rate nicht.\n\n"
                 f"{SYSTEM_PROMPT_DISCLAIMER}"
             )
         body = truncate_text(item.body_text, 12000)
@@ -223,8 +262,12 @@ class OpenRouterClient:
                         return self._dict_to_result(json.loads(text[start : i + 1]))
                     except json.JSONDecodeError:
                         break
-        logger.warning("Could not parse LLM response as JSON, using defaults")
-        return LLMResult(summary=truncate_text(text, 500))
+        logger.warning("Could not parse LLM response as JSON, marking analysis as failed")
+        return LLMResult(
+            summary=truncate_text(text, 500),
+            parse_ok=False,
+            confidence="niedrig",
+        )
 
     def _dict_to_result(self, data: dict) -> LLMResult:
         try:
@@ -241,9 +284,10 @@ class OpenRouterClient:
         return LLMResult(
             summary=data.get("summary", ""),
             key_points=key_points,
-            verdict=data.get("verdict", "Enthaltung"),
+            verdict=_normalize_verdict(data.get("verdict")),
             verdict_reason=data.get("verdict_reason", ""),
             relevance_score=max(1, min(5, score)),
+            confidence=_normalize_confidence(data.get("confidence")),
         )
 
     def get_credits(self) -> dict | None:
