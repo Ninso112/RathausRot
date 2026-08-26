@@ -13,6 +13,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
     scheduler_ref = None
     _start_time: float = 0.0
+    _calendar_store = None  # type: ignore[var-annotated]
 
     def do_GET(self):
         if self.path == "/calendar.ics":
@@ -83,10 +84,20 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
     def _serve_calendar(self):
         try:
-            from rathausrot.scraper import CouncilItemStore
             from rathausrot.calendar_generator import generate_ics
 
-            items = CouncilItemStore().get_all_as_items(limit=500)
+            # Reuse the same store across requests to avoid opening a new
+            # SQLite connection on every poll. The handle is created once
+            # at healthcheck startup (see start_healthcheck) and lives on
+            # the class so it survives across handler instances.
+            store = self.__class__._calendar_store
+            if store is None:
+                # Fallback for tests that call the handler without going
+                # through start_healthcheck.
+                from rathausrot.scraper import CouncilItemStore
+
+                store = CouncilItemStore()
+            items = store.get_all_as_items(limit=500)
             ics_data = generate_ics(items)
             self.send_response(200)
             self.send_header("Content-Type", "text/calendar; charset=utf-8")
@@ -106,17 +117,32 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         logger.debug("Healthcheck: %s", format % args)
 
 
-def start_healthcheck(port: int, scheduler_ref=None) -> threading.Thread | None:
-    """Start the health check HTTP server in a daemon thread. Returns the thread or None."""
+def start_healthcheck(
+    port: int, scheduler_ref=None
+) -> tuple[threading.Thread | None, "HTTPServer | None"]:
+    """Start the health check HTTP server in a daemon thread.
+
+    Returns ``(thread, server)`` so callers can shut the server down cleanly
+    via ``server.shutdown()``. Returns ``(None, None)`` when ``port <= 0``.
+    """
     if port <= 0:
-        return None
+        return None, None
+
+    # Build the shared CouncilItemStore once on the calling thread so the
+    # healthcheck thread reuses its SQLite connection instead of opening
+    # one per request.
+    from rathausrot.scraper import CouncilItemStore
 
     HealthCheckHandler.scheduler_ref = scheduler_ref
     HealthCheckHandler._start_time = time.time()
+    HealthCheckHandler._calendar_store = CouncilItemStore()
+
+    server_ref: list = []
 
     def _run():
         try:
             server = HTTPServer(("127.0.0.1", port), HealthCheckHandler)
+            server_ref.append(server)
             logger.info("Health check server started on port %d", port)
             server.serve_forever()
         except Exception as exc:
@@ -124,4 +150,9 @@ def start_healthcheck(port: int, scheduler_ref=None) -> threading.Thread | None:
 
     thread = threading.Thread(target=_run, daemon=True, name="healthcheck")
     thread.start()
-    return thread
+    # `server_ref` is populated by _run once the HTTPServer is constructed.
+    # We briefly wait so the caller can get a handle to it for shutdown.
+    deadline = time.monotonic() + 2.0
+    while not server_ref and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return thread, (server_ref[0] if server_ref else None)

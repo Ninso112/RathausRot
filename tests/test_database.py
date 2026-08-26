@@ -91,9 +91,59 @@ def test_consecutive_failures_reset_by_success(db_path):
     assert tracker.get_consecutive_failures() == 0
 
 
-def test_consecutive_failures_empty(db_path):
+def test_consecutive_failures_works_beyond_100(db_path):
+    """The previous ``LIMIT 100`` capped the streak count; after 100
+    consecutive failures the helper should still return the true number.
+    """
     tracker = RunHistoryTracker(db_path)
-    assert tracker.get_consecutive_failures() == 0
+    for _ in range(120):
+        tracker.record_run(0, False, "err")
+    assert tracker.get_consecutive_failures() == 120
+
+
+def test_council_items_roundtrips_city_and_committee(db_path):
+    store = CouncilItemStore(db_path)
+    item = CouncilItem(
+        id="with-meta",
+        title="Antrag Wohnungsbau",
+        url="https://example.de/x",
+        item_type="vorlage",
+        date="",
+        body_text="",
+        city_name="Musterstadt",
+        committee="Bezirksausschuss III",
+    )
+    store.store(item)
+    items = store.get_all_as_items(limit=10)
+    by_id = {i.id: i for i in items}
+    assert by_id["with-meta"].city_name == "Musterstadt"
+    assert by_id["with-meta"].committee == "Bezirksausschuss III"
+
+
+def test_council_items_migrates_legacy_schema(db_path):
+    """A ``council_items`` table created before multi-city support must
+    gain the new columns via ``ALTER TABLE`` on first access.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE council_items "
+        "(item_id TEXT PRIMARY KEY, title TEXT, url TEXT, "
+        "date TEXT, item_type TEXT, source_system TEXT, body_text TEXT, "
+        "stored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+    )
+    conn.execute(
+        "INSERT INTO council_items (item_id, title, url, body_text) "
+        "VALUES ('legacy', 'Legacy', 'http://e/0', 'old body')"
+    )
+    conn.commit()
+    conn.close()
+
+    store = CouncilItemStore(db_path)
+    items = store.get_all_as_items(limit=10)
+    assert items[0].id == "legacy"
+    # The migration added the columns; values default to "".
+    assert items[0].city_name == ""
+    assert items[0].committee == ""
 
 
 # ------------------------------------------------------------------ #

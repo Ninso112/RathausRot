@@ -574,7 +574,9 @@ def test_fetch_generic_filters_irrelevant_links():
         '<html><a href="/about">About</a><a href="/vorlage/1">Vorlage 1</a></html>',
         "html.parser",
     )
-    scraper.tracker.is_new = MagicMock(return_value=True)
+    scraper.tracker.check_and_mark_batch = MagicMock(
+        side_effect=lambda ids: list(ids)
+    )
     detail = BeautifulSoup("<html><body>Detail</body></html>", "html.parser")
 
     def fake_fetch(url):
@@ -610,7 +612,7 @@ def test_fetch_generic_skips_duplicates():
     soup = BeautifulSoup(
         '<html><a href="/vorlage/1">Vorlage 1</a></html>', "html.parser"
     )
-    scraper.tracker.is_new = MagicMock(return_value=False)
+    scraper.tracker.check_and_mark_batch = MagicMock(return_value=[])
     with patch.object(scraper, "_fetch_page", return_value=soup):
         items = list(scraper._fetch_generic())
     assert items == []
@@ -648,9 +650,14 @@ def test_extract_pdf_text_truncates_to_max_pages():
     mock_pdf.__enter__ = MagicMock(return_value=mock_pdf)
     mock_pdf.__exit__ = MagicMock(return_value=False)
 
+    # Use a real context-manager so ``with self.session.get(...) as resp:``
+    # yields the same response object the test set up.
     mock_response = MagicMock()
-    mock_response.content = b"fake pdf content"
+    mock_response.content = b"%PDF-1.4 fake pdf content"
+    mock_response.headers = {"content-length": "32"}
     mock_response.raise_for_status = MagicMock()
+    mock_response.__enter__ = MagicMock(return_value=mock_response)
+    mock_response.__exit__ = MagicMock(return_value=False)
 
     with patch.object(scraper.session, "get", return_value=mock_response):
         with patch("pdfplumber.open", return_value=mock_pdf):

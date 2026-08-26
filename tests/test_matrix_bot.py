@@ -65,7 +65,8 @@ class TestMatrixBotInit:
 
     def test_client_initially_none(self):
         bot = MatrixBot(make_config())
-        assert bot._client is None
+        assert bot._send_client is None
+        assert bot._loop is None
 
 
 # ------------------------------------------------------------------ #
@@ -92,7 +93,7 @@ class TestSendChunks:
         bot = MatrixBot(make_config())
         bot.send_message = MagicMock()
         bot.send_chunks(["<p>only</p>"])
-        bot.send_message.assert_called_once_with("<p>only</p>")
+        bot.send_message.assert_called_once_with("<p>only</p>", room_ids=None)
 
 
 # ------------------------------------------------------------------ #
@@ -128,46 +129,34 @@ class TestClose:
         bot = MatrixBot(make_config())
         bot.close()  # Should not raise (no-op)
 
-    def test_close_is_noop(self):
+    def test_close_with_send_client(self):
         bot = MatrixBot(make_config())
         mock_client = MagicMock()
-        bot._client = mock_client
-        bot.close()  # close() is a no-op since clients are per-call
+        bot._send_client = mock_client
+        bot._loop = None  # avoid touching the real asyncio loop
+        bot.close()
+        assert bot._send_client is None
 
 
-# ------------------------------------------------------------------ #
-# run_sync
-# ------------------------------------------------------------------ #
+class TestRunAsyncTimeout:
+    def test_timeout_raises_matrix_send_timeout(self):
+        import concurrent.futures
 
+        from rathausrot.matrix_bot import MatrixSendTimeout
 
-class TestRunSync:
-    def test_run_sync(self):
         bot = MatrixBot(make_config())
-
-        async def coro():
-            return 42
-
-        result = bot.run_sync(coro())
-        assert result == 42
-
-
-# ------------------------------------------------------------------ #
-# _new_client
-# ------------------------------------------------------------------ #
-
-
-class TestNewClient:
-    def test_creates_new_client(self):
-        bot = MatrixBot(make_config())
-        mock_nio = MagicMock()
-        mock_client = MagicMock()
-        mock_nio.AsyncClient.return_value = mock_client
-
-        with patch.dict("sys.modules", {"nio": mock_nio}):
-            client = bot._new_client()
-
-        assert client is mock_client
-        mock_nio.AsyncClient.assert_called_once()
+        bot._send_lock = MagicMock()
+        bot._ensure_send_loop = MagicMock(return_value=MagicMock())
+        # Simulate a coroutine whose future never completes within the
+        # deadline so ``future.result(timeout=...)`` raises TimeoutError.
+        fake_future = MagicMock()
+        fake_future.result.side_effect = concurrent.futures.TimeoutError()
+        with patch(
+            "asyncio.run_coroutine_threadsafe", return_value=fake_future
+        ):
+            with pytest.raises(MatrixSendTimeout):
+                bot._run_async(MagicMock(), timeout=0.01)
+        fake_future.cancel.assert_called_once()
 
 
 # ------------------------------------------------------------------ #

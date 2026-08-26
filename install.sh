@@ -75,12 +75,12 @@ fi
 
 echo -e "${BOLD}Prüfe Python-Version...${NC}"
 PYTHON_CMD=""
-for cmd in python3.12 python3.11 python3.10 python3.9 python3; do
+for cmd in python3.12 python3.11 python3; do
     if command -v "$cmd" &>/dev/null; then
         VERSION=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
         MAJOR=$(echo "$VERSION" | cut -d. -f1)
         MINOR=$(echo "$VERSION" | cut -d. -f2)
-        if [ "$MAJOR" -ge 3 ] && [ "$MINOR" -ge 9 ]; then
+        if [ "$MAJOR" -ge 3 ] && [ "$MINOR" -ge 11 ]; then
             PYTHON_CMD="$cmd"
             echo -e "${GREEN}✓ Python ${VERSION} gefunden (${cmd}).${NC}"
             break
@@ -89,7 +89,7 @@ for cmd in python3.12 python3.11 python3.10 python3.9 python3; do
 done
 
 if [ -z "$PYTHON_CMD" ]; then
-    echo -e "${RED}Fehler: Python 3.9+ nicht gefunden. Bitte installiere Python 3.9 oder neuer.${NC}"
+    echo -e "${RED}Fehler: Python 3.11+ nicht gefunden. Bitte installiere Python 3.11 oder neuer.${NC}"
     exit 1
 fi
 

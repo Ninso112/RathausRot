@@ -228,18 +228,33 @@ class RatsinfoScraper:
         soup = self._fetch_index_page(self.base_url)
         if soup is None:
             return
+        # Parse every matching element first so we can decide "is new" in
+        # one SQL round-trip instead of one per element. Items with no
+        # content are dropped here, before the DB call.
+        parsed: list[CouncilItem] = []
         for selector in selectors:
             for element in soup.select(selector):
                 try:
                     item = self._parse_list_item(element, source_system)
-                    if item and (force or self.tracker.is_new(item.id)):
-                        if not item.body_text and not item.pdf_urls:
-                            logger.debug("Item skipped (no content): %s", item.title)
-                            continue
-                        rate_limit_sleep()
-                        yield item
                 except Exception as exc:
                     logger.warning("Error parsing %s item: %s", source_system, exc)
+                    continue
+                if item is None:
+                    continue
+                if not item.body_text and not item.pdf_urls:
+                    logger.debug("Item skipped (no content): %s", item.title)
+                    continue
+                parsed.append(item)
+        new_ids = (
+            {item.id for item in parsed}
+            if force
+            else set(self.tracker.check_and_mark_batch([item.id for item in parsed]))
+        )
+        for item in parsed:
+            if item.id not in new_ids:
+                continue
+            rate_limit_sleep()
+            yield item
 
     def _fetch_sessionnet(self, force: bool = False) -> Iterator[CouncilItem]:
         yield from self._fetch_and_parse(
@@ -272,6 +287,11 @@ class RatsinfoScraper:
             rows = soup.find_all("a", href=lambda h: h and "/vorgang/?__=" in h)
         else:
             rows = table.find_all("a", href=lambda h: h and "/vorgang/?__=" in h)
+        # First pass: collect every link, deduplicate by Sternberg __= id, and
+        # harvest title/date/committee metadata without any DB access. The
+        # second pass batches the "is new" check into a single SQL query
+        # instead of N+1.
+        candidates: list[tuple[str, str, str, str, str]] = []
         seen_canonical: set = set()
         for a_tag in rows:
             try:
@@ -287,7 +307,6 @@ class RatsinfoScraper:
                 title = a_tag.get_text(strip=True)
                 if not title:
                     continue
-                # Try to find date and committee from nearby tops link
                 parent = a_tag.find_parent(["tr", "li", "div"])
                 date_str = ""
                 committee = ""
@@ -299,9 +318,6 @@ class RatsinfoScraper:
                             tops_link, date_str
                         )
                 item_id = self._build_item_id(url, title)
-                if not force and not self.tracker.is_new(item_id):
-                    logger.debug("Skipping known Sternberg item: %s", title)
-                    continue
                 # Skip detail fetch for past items early (saves HTTP requests)
                 if date_str and not self._is_future_or_unknown_date(date_str):
                     logger.debug(
@@ -310,14 +326,28 @@ class RatsinfoScraper:
                         date_str,
                     )
                     continue
-                rate_limit_sleep()
+                candidates.append((item_id, title, url, date_str, committee))
+            except Exception as exc:
+                logger.warning("Error in Sternberg fetch: %s", exc)
+        new_ids = (
+            {c[0] for c in candidates}
+            if force
+            else set(self.tracker.check_and_mark_batch([c[0] for c in candidates]))
+        )
+        for item_id, title, url, date_str, committee in candidates:
+            if item_id not in new_ids:
+                logger.debug("Skipping known Sternberg item: %s", title)
+                continue
+            rate_limit_sleep()
+            try:
                 item = self._parse_sternberg_item(
                     item_id, title, url, date_str, committee
                 )
-                if item:
-                    yield item
             except Exception as exc:
-                logger.warning("Error in Sternberg fetch: %s", exc)
+                logger.warning("Error parsing Sternberg item %s: %s", title, exc)
+                continue
+            if item:
+                yield item
 
     @staticmethod
     def _extract_sternberg_committee(tops_link, date_str: str) -> str:
@@ -388,6 +418,10 @@ class RatsinfoScraper:
         soup = self._fetch_index_page(self.base_url)
         if soup is None:
             return
+        # First pass: collect every candidate (url, title) without DB
+        # access so the "is new" check can be batched into a single
+        # round-trip.
+        candidates: list[tuple[str, str]] = []
         for a in soup.find_all("a", href=True):
             try:
                 href = a["href"]
@@ -402,25 +436,34 @@ class RatsinfoScraper:
                 title = a.get_text(strip=True)
                 if not title:
                     continue
-                item_id = self._build_item_id(url, title)
-                if not force and not self.tracker.is_new(item_id):
-                    continue
-                rate_limit_sleep()
-                detail = self._fetch_page(url)
-                body_text = detail.get_text(" ", strip=True) if detail else ""
-                item = CouncilItem(
-                    id=item_id,
-                    title=title,
-                    url=url,
-                    item_type="generic",
-                    date="",
-                    body_text=truncate_text(body_text, 12000),
-                    source_system="generic",
-                    city_name=self.city_name,
-                )
-                yield item
+                candidates.append((self._build_item_id(url, title), url, title))
             except Exception as exc:
-                logger.warning("Error in generic fetch: %s", exc)
+                logger.warning("Error collecting generic candidate: %s", exc)
+        new_ids = (
+            {c[0] for c in candidates}
+            if force
+            else set(self.tracker.check_and_mark_batch([c[0] for c in candidates]))
+        )
+        for item_id, url, title in candidates:
+            if item_id not in new_ids:
+                continue
+            rate_limit_sleep()
+            try:
+                detail = self._fetch_page(url)
+            except Exception as exc:
+                logger.warning("Error fetching generic detail %s: %s", url, exc)
+                continue
+            body_text = detail.get_text(" ", strip=True) if detail else ""
+            yield CouncilItem(
+                id=item_id,
+                title=title,
+                url=url,
+                item_type="generic",
+                date="",
+                body_text=truncate_text(body_text, 12000),
+                source_system="generic",
+                city_name=self.city_name,
+            )
 
     def _parse_list_item(self, element, source_system: str) -> CouncilItem | None:
         a_tag = element.find("a", href=True)

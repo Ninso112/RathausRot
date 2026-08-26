@@ -50,7 +50,7 @@ class TestAuthorization:
         assert handler.is_allowed("@admin:example.com") is True
         assert handler.is_allowed("@other:example.com") is False
 
-    def test_unauthorized_command_returns_error(self):
+    def test_unauthorized_command_returns_silently(self):
         handler = make_handler(
             bot={
                 "allowed_users": ["@admin:example.com"],
@@ -59,9 +59,10 @@ class TestAuthorization:
                 "party": "SPD",
             }
         )
+        # Unauthorized senders get no response to avoid spam amplification
+        # of expensive handlers like ``!suche`` / ``!log``.
         result = handler.handle("@other:example.com", "!hilfe")
-        assert result is not None
-        assert "Keine Berechtigung" in result
+        assert result is None
 
 
 # ------------------------------------------------------------------ #
@@ -79,7 +80,23 @@ class TestXSSEscaping:
                 "party": "SPD",
             }
         )
+        # Unauthorized senders get no response now (silent drop) so the
+        # only thing left to verify is that the handler never echoes the
+        # raw sender back into HTML it returns.
         result = handler.handle("<script>alert(1)</script>", "!hilfe")
+        assert result is None
+
+    def test_allowed_sender_xss_still_escaped(self):
+        """When the sender IS allowed, error paths must still escape."""
+        handler = make_handler(
+            bot={"allowed_users": [], "schedule_day": "monday",
+                 "schedule_time": "08:00", "party": "SPD"}
+        )
+        handler._commands["!hilfe"] = MagicMock(
+            side_effect=ValueError("<script>xss</script>")
+        )
+        result = handler.handle("<script>alert(1)</script>", "!hilfe")
+        assert result is not None
         assert "<script>" not in result
         assert "&lt;script&gt;" in result
 

@@ -47,9 +47,11 @@ class BotScheduler:
         self._retry_queue = RetryQueue()
         self._stop_event = threading.Event()
         self._item_store = CouncilItemStore()
+        self._formatter = MatrixFormatter()
         self._progress_lock = threading.Lock()
         self._pipeline_progress: dict = {"running": False}
         self._cancel_event = threading.Event()
+        self._healthcheck_server = None
 
     @property
     def history(self) -> RunHistoryTracker:
@@ -65,8 +67,7 @@ class BotScheduler:
         """Send item report and optional PDF attachments to Matrix rooms."""
         if self._bot is None:
             return
-        formatter = MatrixFormatter()
-        chunks = formatter.format_single_item_report(
+        chunks = self._formatter.format_single_item_report(
             item, result, source_url, city_name=city_name
         )
         self._bot.send_chunks(chunks, room_ids=room_ids)
@@ -94,7 +95,7 @@ class BotScheduler:
             }
         try:
             llm_client = OpenRouterClient(self.config)
-            formatter = MatrixFormatter()
+            formatter = self._formatter
 
             # Process retry queue first (global, no city context)
             retry_tracker = DuplicateTracker()
@@ -200,7 +201,11 @@ class BotScheduler:
                                     cache_exc,
                                 )
                                 result = llm_client.analyze_item(item)
-                                self._llm_cache.put(item.id, result)
+                                # Only cache fully-parsed results; a degraded
+                                # result (parse_ok=False) must be re-analyzed
+                                # next run.
+                                if result is not None and result.parse_ok:
+                                    self._llm_cache.put(item.id, result)
                         else:
                             result = llm_client.analyze_item(item)
                             # Only cache fully-parsed results; a degraded result
@@ -349,7 +354,9 @@ class BotScheduler:
         logger.info("Scheduler starting")
 
         healthcheck_port = self.config.get("bot", {}).get("healthcheck_port", 0)
-        start_healthcheck(healthcheck_port, scheduler_ref=self)
+        _hc_thread, self._healthcheck_server = start_healthcheck(
+            healthcheck_port, scheduler_ref=self
+        )
 
         self._bot = MatrixBot(self.config)
         command_handler = CommandHandler(
@@ -376,8 +383,19 @@ class BotScheduler:
                 self._stop_event.wait(timeout=10)
         finally:
             logger.info("Scheduler shutting down, closing resources")
+            if self._healthcheck_server is not None:
+                try:
+                    self._healthcheck_server.shutdown()
+                except Exception as exc:
+                    logger.debug("Healthcheck shutdown error: %s", exc)
+                self._healthcheck_server.server_close()
+                self._healthcheck_server = None
             if self._bot is not None:
                 self._bot.close()
+            # Wait briefly for in-flight pipeline work to settle before
+            # closing the SQLite registry so we don't yank a connection
+            # out from under another thread.
+            self._stop_event.wait(timeout=1.0)
             DatabaseManager.close_all()
 
     def stop(self) -> None:

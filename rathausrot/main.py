@@ -108,10 +108,13 @@ def main():
         config = config_manager.load()
         formatter = MatrixFormatter()
         bot = MatrixBot(config)
-        bot.send_message(formatter.format_test_message())
+        ok = bot.send_message(formatter.format_test_message())
         bot.close()
-        print("Testnachricht gesendet.")
-        sys.exit(0)
+        if ok:
+            print("Testnachricht gesendet.")
+            sys.exit(0)
+        print("Testnachricht konnte nicht zugestellt werden (s. Log).")
+        sys.exit(1)
 
     from rathausrot.scheduler import BotScheduler
 

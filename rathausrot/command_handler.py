@@ -79,7 +79,11 @@ class CommandHandler:
         return sender in self.allowed_users
 
     def handle(self, sender: str, body: str) -> str | None:
-        """Parse and execute a command. Returns HTML response string or None."""
+        """Parse and execute a command. Returns HTML response string or None.
+
+        Returns ``None`` for non-commands, the bot's own messages, unknown
+        commands, and (to avoid spam amplification) unauthorized senders.
+        """
         # Never respond to own messages
         if sender == self.bot_username:
             return None
@@ -90,10 +94,11 @@ class CommandHandler:
         if cmd not in self._commands:
             return None
         if not self.is_allowed(sender):
+            # Silently ignore unauthorized senders so they can't probe
+            # expensive handlers like ``!suche`` (LIKE over the full
+            # ``body_text`` column) or ``!log``.
             logger.warning("Unauthorized command attempt from %s: %s", sender, cmd)
-            return (
-                f"<p>⛔ Keine Berechtigung für <code>{html.escape(sender)}</code>.</p>"
-            )
+            return None
         logger.info("Command '%s' from %s", cmd, sender)
         try:
             return self._commands[cmd](sender, body)

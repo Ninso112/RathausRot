@@ -1,13 +1,17 @@
 import asyncio
+import concurrent.futures
 import logging
 import threading
-import time
 
 import requests as _requests
 
 from rathausrot.utils import strip_html
 
 logger = logging.getLogger(__name__)
+
+
+class MatrixSendTimeout(RuntimeError):
+    """Raised when a Matrix send call does not return within the deadline."""
 
 
 class MatrixBot:
@@ -26,7 +30,6 @@ class MatrixBot:
         else:
             self.room_ids = []
         self._room_ids_set = set(self.room_ids)
-        self._client = None
         self._command_handler_ref = None
         # Persistent event loop for sending messages
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -35,10 +38,20 @@ class MatrixBot:
         self._send_lock = threading.Lock()
 
     def _ensure_send_loop(self) -> asyncio.AbstractEventLoop:
-        """Start a background event loop thread if not already running."""
+        """Start a background event loop thread if not already running.
+
+        All state (loop, thread, client) is mutated under ``_send_lock`` so
+        a concurrent ``close()`` and ``_ensure_send_loop()`` cannot race to
+        create a second loop or leak the first one.
+        """
         with self._send_lock:
             if self._loop is not None and self._loop.is_running():
                 return self._loop
+            # If a previous close() left a dead loop/thread, drop them so we
+            # build a fresh pair instead of returning the stale handle.
+            if self._loop is not None:
+                self._loop = None
+                self._loop_thread = None
             self._loop = asyncio.new_event_loop()
             ready = threading.Event()
 
@@ -56,29 +69,32 @@ class MatrixBot:
 
     def _get_send_client(self):
         """Get or create a persistent nio.AsyncClient for sending messages."""
-        if self._send_client is not None:
-            return self._send_client
-        import nio
+        with self._send_lock:
+            if self._send_client is not None:
+                return self._send_client
+            import nio
 
-        client = nio.AsyncClient(self.homeserver, self.username)
-        client.access_token = self.access_token
-        client.user_id = self.username
-        self._send_client = client
-        return client
+            client = nio.AsyncClient(self.homeserver, self.username)
+            client.access_token = self.access_token
+            client.user_id = self.username
+            self._send_client = client
+        return self._send_client
 
-    def _run_async(self, coro):
-        """Submit a coroutine to the persistent event loop and wait for result."""
+    def _run_async(self, coro, timeout: float = 120.0):
+        """Submit a coroutine to the persistent event loop and wait for result.
+
+        Raises ``MatrixSendTimeout`` instead of leaking ``TimeoutError`` to
+        callers (the pipeline would otherwise log it as a generic "Pipeline-Fehler").
+        """
         loop = self._ensure_send_loop()
         future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(timeout=120)
-
-    def _new_client(self):
-        import nio
-
-        client = nio.AsyncClient(self.homeserver, self.username)
-        client.access_token = self.access_token
-        client.user_id = self.username
-        return client
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
+            raise MatrixSendTimeout(
+                f"Matrix send did not complete within {timeout:.0f}s"
+            ) from exc
 
     @staticmethod
     def login_with_password(homeserver: str, username: str, password: str) -> str:
@@ -89,6 +105,11 @@ class MatrixBot:
             try:
                 resp = await client.login(password)
                 if isinstance(resp, nio.LoginResponse):
+                    if not resp.access_token:
+                        raise RuntimeError(
+                            "Login succeeded but the homeserver returned an empty "
+                            "access_token"
+                        )
                     return resp.access_token
                 raise RuntimeError(f"Login failed: {resp}")
             finally:
@@ -98,9 +119,12 @@ class MatrixBot:
 
     def send_message(
         self, html_content: str, room_ids: list[str] | None = None
-    ) -> None:
+    ) -> bool:
         plain = strip_html(html_content)
         target_rooms = room_ids if room_ids is not None else self.room_ids
+        if not target_rooms:
+            logger.debug("send_message called with no target rooms, skipping")
+            return False
 
         async def _send_all():
             import nio
@@ -112,6 +136,7 @@ class MatrixBot:
                 "format": "org.matrix.custom.html",
                 "formatted_body": html_content,
             }
+            all_ok = True
             for room_id in target_rooms:
                 resp = await client.room_send(
                     room_id=room_id,
@@ -120,20 +145,22 @@ class MatrixBot:
                 )
                 if isinstance(resp, nio.RoomSendError):
                     logger.error("Failed to send message to %s: %s", room_id, resp)
+                    all_ok = False
                 else:
                     logger.info("Message sent to %s", room_id)
+            return all_ok
 
-        self._run_async(_send_all())
+        return bool(self._run_async(_send_all()))
 
-    def send_chunks(self, chunks: list[str], room_ids: list[str] | None = None) -> None:
+    def send_chunks(self, chunks: list[str], room_ids: list[str] | None = None) -> bool:
+        if not chunks:
+            return True
+        all_ok = True
         for i, chunk in enumerate(chunks):
             logger.info("Sending chunk %d/%d", i + 1, len(chunks))
-            if room_ids is not None:
-                self.send_message(chunk, room_ids=room_ids)
-            else:
-                self.send_message(chunk)
-            if i < len(chunks) - 1:
-                time.sleep(1)
+            if not self.send_message(chunk, room_ids=room_ids):
+                all_ok = False
+        return all_ok
 
     def send_bytes_as_file(
         self,
@@ -141,9 +168,12 @@ class MatrixBot:
         filename: str,
         mimetype: str = "application/octet-stream",
         room_ids: list[str] | None = None,
-    ) -> None:
+    ) -> bool:
         """Upload raw bytes as a Matrix file message to the specified (or all configured) rooms."""
         target_rooms = room_ids if room_ids is not None else self.room_ids
+        if not target_rooms:
+            logger.debug("send_bytes_as_file called with no target rooms, skipping")
+            return False
 
         async def _upload_and_send():
             import nio
@@ -157,7 +187,7 @@ class MatrixBot:
             )
             if isinstance(up_resp, nio.UploadError):
                 logger.error("Matrix upload failed for %s: %s", filename, up_resp)
-                return
+                return False
             mxc_url = up_resp.content_uri
             content = {
                 "msgtype": "m.file",
@@ -165,6 +195,7 @@ class MatrixBot:
                 "url": mxc_url,
                 "info": {"mimetype": mimetype, "size": len(data)},
             }
+            all_ok = True
             for room_id in target_rooms:
                 send_resp = await client.room_send(
                     room_id=room_id,
@@ -173,10 +204,12 @@ class MatrixBot:
                 )
                 if isinstance(send_resp, nio.RoomSendError):
                     logger.error("Failed to send file to %s: %s", room_id, send_resp)
+                    all_ok = False
                 else:
                     logger.info("File %s sent to %s", filename, room_id)
+            return all_ok
 
-        self._run_async(_upload_and_send())
+        return bool(self._run_async(_upload_and_send()))
 
     def send_startup_message(self) -> None:
         self.send_message(
@@ -205,26 +238,36 @@ class MatrixBot:
             logger.warning("Could not download file %s: %s", url, exc)
 
     def close(self) -> None:
-        """Close the persistent send client and event loop."""
-        if self._send_client is not None:
+        """Close the persistent send client and event loop.
+
+        Holds ``_send_lock`` for the whole teardown so a concurrent
+        ``_ensure_send_loop`` from the ``!kalender`` upload thread or a
+        ``!scrape`` cannot resurrect a half-torn-down state.
+        """
+        with self._send_lock:
+            client = self._send_client
+            loop = self._loop
+            thread = self._loop_thread
+            self._send_client = None
+            self._loop = None
+            self._loop_thread = None
+        if client is not None:
             try:
-                loop = self._loop
                 if loop is not None and loop.is_running():
-                    future = asyncio.run_coroutine_threadsafe(
-                        self._send_client.close(), loop
-                    )
-                    future.result(timeout=10)
+                    future = asyncio.run_coroutine_threadsafe(client.close(), loop)
+                    try:
+                        future.result(timeout=10)
+                    except concurrent.futures.TimeoutError:
+                        logger.warning(
+                            "Timeout closing Matrix send client; abandoning connection"
+                        )
+                        future.cancel()
             except Exception as exc:
                 logger.debug("Error closing send client: %s", exc)
-            self._send_client = None
-        if self._loop is not None and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._loop_thread is not None and self._loop_thread.is_alive():
-            self._loop_thread.join(timeout=10)
-        self._loop = None
-
-    def run_sync(self, coro):
-        return asyncio.run(coro)
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=10)
 
     # ------------------------------------------------------------------ #
     # Command listener – runs in a dedicated daemon thread

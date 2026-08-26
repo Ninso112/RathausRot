@@ -63,7 +63,9 @@ def _normalize_verdict(raw) -> str:
         if cleaned.casefold() == verdict.casefold():
             return verdict
     if cleaned:
-        logger.warning("Unrecognized verdict from LLM, defaulting to Enthaltung: %r", raw)
+        logger.warning(
+            "Unrecognized verdict from LLM, defaulting to Enthaltung: %r", raw
+        )
     return "Enthaltung"
 
 
@@ -75,6 +77,52 @@ def _normalize_confidence(raw) -> str:
             if cleaned == level:
                 return level
     return "mittel"
+
+
+def _extract_balanced_json(text: str) -> dict | None:
+    """Find the first top-level balanced ``{...}`` object in *text* and parse it.
+
+    Strings are tracked so that braces inside JSON string literals do not
+    confuse the depth counter. Returns ``None`` if no balanced object can
+    be parsed.
+    """
+    start = -1
+    depth = 0
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth == 0:
+                continue
+            depth -= 1
+            if depth == 0 and start != -1:
+                candidate = text[start : i + 1]
+                try:
+                    data = json.loads(candidate)
+                except json.JSONDecodeError:
+                    # Not actually balanced JSON (e.g. comment-style input);
+                    # keep scanning for the next object.
+                    start = -1
+                    continue
+                if isinstance(data, dict):
+                    return data
+                start = -1
+    return None
 
 
 class OpenRouterClient:
@@ -168,6 +216,11 @@ class OpenRouterClient:
         max_total_seconds = 180
         max_retry_after = 60
         deadline = time.monotonic() + max_total_seconds
+        # Track the most recent token count so we can report usage even when
+        # a successful HTTP response is followed by an unparseable body (the
+        # OpenRouter API still bills those tokens, and we don't want to lose
+        # them from the run history).
+        last_tokens = 0
         for attempt, delay in enumerate(delays, 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -209,14 +262,14 @@ class OpenRouterClient:
                     continue
                 resp.raise_for_status()
                 data = resp.json()
-                tokens = data.get("usage", {}).get("total_tokens", 0)
-                logger.info("LLM tokens used: %d (attempt %d)", tokens, attempt)
+                last_tokens = data.get("usage", {}).get("total_tokens", 0)
+                logger.info("LLM tokens used: %d (attempt %d)", last_tokens, attempt)
                 try:
                     content = data["choices"][0]["message"]["content"]
                 except (KeyError, IndexError, TypeError) as exc:
                     logger.warning("Unexpected LLM response structure: %s", exc)
                     break  # Non-transient – retrying won't help
-                return content, tokens
+                return content, last_tokens
             except (requests.exceptions.RequestException, TimeoutError) as exc:
                 logger.warning("LLM request attempt %d failed: %s", attempt, exc)
                 if attempt < len(delays):
@@ -224,7 +277,7 @@ class OpenRouterClient:
                     if sleep_time > 0:
                         time.sleep(sleep_time)
         logger.error("All LLM request attempts exhausted for prompt, returning None")
-        return None, 0
+        return None, last_tokens
 
     def _parse_response(self, text: str) -> LLMResult:
         max_response_chars = 50_000
@@ -241,28 +294,22 @@ class OpenRouterClient:
             return self._dict_to_result(data)
         except json.JSONDecodeError:
             pass
-        # Try ```json ... ``` code block
-        code_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if code_match:
-            try:
-                return self._dict_to_result(json.loads(code_match.group(1)))
-            except json.JSONDecodeError:
-                pass
-        # Fallback: balanced brace extraction
-        start = text.find("{")
-        if start != -1:
-            depth = 0
-            for i, ch in enumerate(text[start:], start):
-                if ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                if depth == 0:
-                    try:
-                        return self._dict_to_result(json.loads(text[start : i + 1]))
-                    except json.JSONDecodeError:
-                        break
-        logger.warning("Could not parse LLM response as JSON, marking analysis as failed")
+        # Try ```json ... ``` code block(s) by extracting a balanced
+        # JSON object between the fences (the previous non-greedy
+        # ``\{.*?\}`` regex broke on nested objects such as
+        # ``{"key_points": [{"text": "...", "reason": "..."}]}``).
+        for fence_match in re.finditer(r"```(?:json)?\s*([\s\S]+?)\s*```", text):
+            candidate = fence_match.group(1).strip()
+            extracted = _extract_balanced_json(candidate)
+            if extracted is not None:
+                return self._dict_to_result(extracted)
+        # Fallback: balanced brace extraction over the whole response
+        extracted = _extract_balanced_json(text)
+        if extracted is not None:
+            return self._dict_to_result(extracted)
+        logger.warning(
+            "Could not parse LLM response as JSON, marking analysis as failed"
+        )
         return LLMResult(
             summary=truncate_text(text, 500),
             parse_ok=False,
@@ -300,8 +347,17 @@ class OpenRouterClient:
             )
             resp.raise_for_status()
             data = resp.json().get("data", {})
-            total = data.get("total_credits", 0.0)
-            usage = data.get("total_usage", 0.0)
+
+            # OpenRouter sometimes returns numeric values as strings; coerce
+            # defensively so a future API change doesn't crash ``!guthaben``.
+            def _as_float(value, default=0.0):
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return default
+
+            total = _as_float(data.get("total_credits", 0.0))
+            usage = _as_float(data.get("total_usage", 0.0))
             return {
                 "total_credits": total,
                 "total_usage": usage,

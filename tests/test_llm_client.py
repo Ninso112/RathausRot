@@ -120,6 +120,31 @@ class TestParseResponse:
         result = client._parse_response(text)
         assert result.summary == "First"
 
+    def test_nested_json_in_code_block(self):
+        client = make_client()
+        # The previous non-greedy regex captured the first inner ``}`` and
+        # produced a JSONDecodeError; the balanced-extraction helper must
+        # handle nested objects inside fenced code blocks.
+        text = (
+            "Here you go:\n```json\n"
+            '{"summary": "Nested", '
+            '"key_points": [{"text": "a", "reason": "b"}]}\n'
+            "```\nDone."
+        )
+        result = client._parse_response(text)
+        assert result.parse_ok is True
+        assert result.summary == "Nested"
+        assert result.key_points and result.key_points[0]["text"] == "a"
+
+    def test_brace_inside_string_does_not_confuse_extractor(self):
+        client = make_client()
+        # The depth counter must ignore braces that appear inside JSON
+        # string literals (e.g. inside the summary text).
+        text = 'Prefix {"summary": "closing brace } inside", "verdict": "Zustimmung"} suffix'
+        result = client._parse_response(text)
+        assert result.parse_ok is True
+        assert result.summary == "closing brace } inside"
+
 
 class TestComplete:
     def test_successful_response(self):

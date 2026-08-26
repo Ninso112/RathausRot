@@ -34,56 +34,19 @@ def _get_free_port():
 class TestStartHealthcheck:
     def test_port_zero_returns_none(self):
         result = start_healthcheck(0)
-        assert result is None
+        assert result == (None, None)
 
     def test_negative_port_returns_none(self):
         result = start_healthcheck(-1)
-        assert result is None
+        assert result == (None, None)
 
     def test_starts_daemon_thread(self):
         port = _get_free_port()
-        thread = start_healthcheck(port)
-        assert thread is not None
-        assert thread.daemon is True
-        assert thread.is_alive()
-
-        if not _wait_for_server(port):
-            pytest.skip("Cannot bind to network port (sandbox/CI restriction)")
-
-        conn = HTTPConnection("127.0.0.1", port, timeout=2)
+        thread, server = start_healthcheck(port)
         try:
-            conn.request("GET", "/health")
-            resp = conn.getresponse()
-            assert resp.status == 200
-            data = json.loads(resp.read())
-            assert data["status"] == "ok"
-            assert "last_run" in data
-            assert "scrape_running" in data
-        finally:
-            conn.close()
-
-    def test_404_for_non_health_path(self):
-        port = _get_free_port()
-        start_healthcheck(port)
-
-        if not _wait_for_server(port):
-            pytest.skip("Cannot bind to network port (sandbox/CI restriction)")
-
-        conn = HTTPConnection("127.0.0.1", port, timeout=2)
-        try:
-            conn.request("GET", "/other")
-            resp = conn.getresponse()
-            assert resp.status == 404
-        finally:
-            conn.close()
-
-    def test_health_with_last_run_file(self, tmp_path):
-        port = _get_free_port()
-        fake_file = tmp_path / "last_run.txt"
-        fake_file.write_text("2024-06-15T10:00:00")
-
-        with patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
-            start_healthcheck(port)
+            assert thread is not None
+            assert thread.daemon is True
+            assert thread.is_alive()
 
             if not _wait_for_server(port):
                 pytest.skip("Cannot bind to network port (sandbox/CI restriction)")
@@ -92,7 +55,54 @@ class TestStartHealthcheck:
             try:
                 conn.request("GET", "/health")
                 resp = conn.getresponse()
+                assert resp.status == 200
                 data = json.loads(resp.read())
                 assert data["status"] == "ok"
+                assert "last_run" in data
+                assert "scrape_running" in data
             finally:
                 conn.close()
+        finally:
+            if server is not None:
+                server.shutdown()
+
+    def test_404_for_non_health_path(self):
+        port = _get_free_port()
+        _thread, server = start_healthcheck(port)
+        try:
+            if not _wait_for_server(port):
+                pytest.skip("Cannot bind to network port (sandbox/CI restriction)")
+
+            conn = HTTPConnection("127.0.0.1", port, timeout=2)
+            try:
+                conn.request("GET", "/other")
+                resp = conn.getresponse()
+                assert resp.status == 404
+            finally:
+                conn.close()
+        finally:
+            if server is not None:
+                server.shutdown()
+
+    def test_health_with_last_run_file(self, tmp_path):
+        port = _get_free_port()
+        fake_file = tmp_path / "last_run.txt"
+        fake_file.write_text("2024-06-15T10:00:00")
+
+        with patch("rathausrot.scheduler.LAST_RUN_FILE", fake_file):
+            _thread, server = start_healthcheck(port)
+            try:
+                if not _wait_for_server(port):
+                    pytest.skip("Cannot bind to network port (sandbox/CI restriction)")
+
+                conn = HTTPConnection("127.0.0.1", port, timeout=2)
+                try:
+                    conn.request("GET", "/health")
+                    resp = conn.getresponse()
+                    data = json.loads(resp.read())
+                    assert data["status"] == "ok"
+                finally:
+                    conn.close()
+            finally:
+                if server is not None:
+                    server.shutdown()

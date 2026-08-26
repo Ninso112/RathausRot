@@ -13,10 +13,18 @@ DEFAULT_DB_PATH = "processed_items.db"
 
 
 class DatabaseManager:
-    """Centralized database connection manager with thread-local connections."""
+    """Centralized database connection manager.
+
+    Each (thread, db_path) pair gets one shared connection stored in a
+    process-wide registry. ``close_all`` shuts down every connection the
+    process owns, regardless of which thread opened it, so that daemon
+    threads (listener, healthcheck, manual-scrape) do not leak SQLite handles
+    on shutdown.
+    """
 
     _local = threading.local()
-    _lock = threading.Lock()
+    _all_connections: list[sqlite3.Connection] = []
+    _registry_lock = threading.Lock()
 
     @classmethod
     def get_connection(cls, db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
@@ -28,15 +36,22 @@ class DatabaseManager:
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA cache_size=-64000")
             cls._local.connections[db_path] = conn
+            with cls._registry_lock:
+                cls._all_connections.append(conn)
         return cls._local.connections[db_path]
 
     @classmethod
     def close_all(cls) -> None:
-        """Schließt alle Connections des aktuellen Threads."""
+        """Schließt alle bekannten Connections prozessweit."""
+        with cls._registry_lock:
+            conns = cls._all_connections
+            cls._all_connections = []
+        for conn in conns:
+            with contextlib.suppress(Exception):
+                conn.close()
+        # Drop thread-local references so a recycled thread can't
+        # resurrect a closed handle after close_all.
         if hasattr(cls._local, "connections"):
-            for conn in cls._local.connections.values():
-                with contextlib.suppress(Exception):
-                    conn.close()
             cls._local.connections.clear()
 
 
@@ -167,7 +182,7 @@ class RunHistoryTracker:
         """Return how many of the most recent runs failed in an unbroken streak."""
         with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT success FROM run_history ORDER BY ran_at DESC, id DESC LIMIT 100"
+                "SELECT success FROM run_history ORDER BY id DESC"
             ).fetchall()
         count = 0
         for (success,) in rows:
@@ -255,6 +270,19 @@ class CouncilItemStore:
                 "body_text TEXT, "
                 "stored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
             )
+            # Schema migration: add city_name/committee columns to existing DBs
+            # that were created before multi-city support was added.
+            existing_cols = {
+                row[1] for row in conn.execute("PRAGMA table_info(council_items)")
+            }
+            if "city_name" not in existing_cols:
+                conn.execute(
+                    "ALTER TABLE council_items ADD COLUMN city_name TEXT DEFAULT ''"
+                )
+            if "committee" not in existing_cols:
+                conn.execute(
+                    "ALTER TABLE council_items ADD COLUMN committee TEXT DEFAULT ''"
+                )
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS known_sessions "
                 "(id TEXT PRIMARY KEY, title TEXT, date TEXT, url TEXT, "
@@ -274,8 +302,9 @@ class CouncilItemStore:
         with DatabaseManager.get_connection(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO council_items "
-                "(item_id, title, url, date, item_type, source_system, body_text) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(item_id, title, url, date, item_type, source_system, body_text, "
+                "city_name, committee) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     item.id,
                     item.title,
@@ -284,6 +313,8 @@ class CouncilItemStore:
                     item.item_type,
                     item.source_system,
                     item.body_text,
+                    item.city_name,
+                    item.committee,
                 ),
             )
             conn.commit()
@@ -292,7 +323,8 @@ class CouncilItemStore:
         """Return all stored items as CouncilItem objects (no pdf_texts/pdf_urls)."""
         with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT item_id, title, url, date, item_type, source_system, body_text "
+                "SELECT item_id, title, url, date, item_type, source_system, "
+                "body_text, city_name, committee "
                 "FROM council_items ORDER BY stored_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
@@ -305,6 +337,8 @@ class CouncilItemStore:
                 item_type=r[4],
                 source_system=r[5],
                 body_text=r[6],
+                city_name=r[7],
+                committee=r[8],
             )
             for r in rows
         ]
@@ -341,7 +375,8 @@ class CouncilItemStore:
         pattern = f"%{escaped}%"
         with DatabaseManager.get_connection(self.db_path) as conn:
             rows = conn.execute(
-                "SELECT item_id, title, url, date, source_system, stored_at "
+                "SELECT item_id, title, url, date, source_system, stored_at, "
+                "city_name, committee "
                 "FROM council_items "
                 "WHERE title LIKE ? OR body_text LIKE ? "
                 "ORDER BY stored_at DESC LIMIT ?",
@@ -355,6 +390,8 @@ class CouncilItemStore:
                 "date": r[3],
                 "source_system": r[4],
                 "stored_at": r[5],
+                "city_name": r[6],
+                "committee": r[7],
             }
             for r in rows
         ]
