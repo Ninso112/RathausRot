@@ -37,6 +37,9 @@ htmlcov/
 # Claude Code
 .claude/
 
+# Command Code
+.commandcode/
+
 # OpenClaude
 .openclaude*
 *.openclaude
